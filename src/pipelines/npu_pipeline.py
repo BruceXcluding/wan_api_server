@@ -24,6 +24,9 @@ class NPUPipeline(BasePipeline):
         if not NPU_AVAILABLE:
             raise RuntimeError("torch_npu not available, cannot use NPU pipeline")
         
+        # 🔥 在调用父类构造函数前设置device_type
+        model_args['device_type'] = 'npu'  # 🔥 强制设置为npu
+        
         # 🔥 设置分布式参数
         self.rank = rank
         self.world_size = world_size  
@@ -37,7 +40,7 @@ class NPUPipeline(BasePipeline):
         self.vae_parallel = use_distributed
         self.t5_cpu = model_args.get("t5_cpu", False)
         
-        # 🔥 调用父类构造函数，传入ckpt_dir
+        # 🔥 调用父类构造函数，传入修正后的model_args
         super().__init__(ckpt_dir, **model_args)
 
     def _get_backend(self) -> str:
@@ -90,18 +93,18 @@ class NPUPipeline(BasePipeline):
         if self.rank == 0:
             logger.info(f"Generating video: {width}x{height}, {getattr(request, 'num_frames', 81)} frames")
             
-        # 🔥 按照generate.py的正确调用方式
+        # 🔥 修复：参照generate.py第311行的精确参数映射
         video = self.model.generate(
-            request.prompt,
-            img,
-            max_area=max_area,
+            request.prompt,                                    # 第一个位置参数：prompt
+            img,                                              # 第二个位置参数：img
+            max_area=max_area,                                # 关键字参数
             frame_num=getattr(request, "num_frames", 81),
-            shift=getattr(request, "sample_shift", 5.0),
-            sample_solver=getattr(request, "sample_solver", "unipc"),
-            sampling_steps=getattr(request, "infer_steps", 40),
-            guide_scale=getattr(request, "guidance_scale", 5.0),
-            seed=getattr(request, "seed", 42) if getattr(request, "seed", None) is not None else 42,
-            offload_model=False,
+            shift=getattr(request, "sample_shift", 5.0),      # ✅ schema中有这个字段
+            sample_solver=getattr(request, "sample_solver", "unipc"),  # ✅ schema中有这个字段
+            sampling_steps=getattr(request, "infer_steps", 40),  # 🔥 修复：infer_steps -> sampling_steps
+            guide_scale=getattr(request, "guidance_scale", 5.0),  # 🔥 修复：guidance_scale -> guide_scale
+            seed=getattr(request, "seed", 42) if getattr(request, "seed", None) is not None else 42,  # 🔥 防止None
+            offload_model=False,  # 🔥 修复：分布式时固定为False
         )
     
         if self.rank == 0:

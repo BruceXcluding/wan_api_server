@@ -3,56 +3,16 @@ import logging
 from typing import Dict, Any
 
 from pipelines.base_pipeline import BasePipeline
+# 🔥 修复：使用统一的设备检测
+from utils.device_detector import detect_device
 
 logger = logging.getLogger(__name__)
 
-def detect_device() -> Dict[str, Any]:
-    """自动检测设备类型和数量"""
-    try:
-        try:
-            import torch_npu
-            if torch_npu.npu.is_available():
-                device_type = "npu"
-                device_count = torch_npu.npu.device_count()
-                backend = "hccl"
-                logger.info(f"Detected device: {device_type}, count: {device_count}, backend: {backend}")
-                return {
-                    "device_type": device_type,
-                    "device_count": device_count,
-                    "backend": backend
-                }
-        except ImportError:
-            pass
-        import torch
-        if torch.cuda.is_available():
-            device_type = "cuda"
-            device_count = torch.cuda.device_count()
-            backend = "nccl"
-        else:
-            device_type = "cpu"
-            device_count = os.cpu_count() or 1
-            backend = "gloo"
-        logger.info(f"Detected device: {device_type}, count: {device_count}, backend: {backend}")
-        return {
-            "device_type": device_type,
-            "device_count": device_count,
-            "backend": backend
-        }
-    except Exception as e:
-        logger.error(f"Device detection failed: {e}")
-        return {
-            "device_type": "cpu",
-            "device_count": 1,
-            "backend": "gloo"
-        }
-
 def create_pipeline():
     """创建分布式pipeline"""
-    import os
     
-    # 🔥 修复：正确获取设备信息
-    device_info = detect_device()
-    device_type = device_info["device_type"]
+    # 🔥 修复：使用统一的设备检测函数
+    device_type, device_count, backend = detect_device()
     
     # 获取分布式信息
     rank = int(os.environ.get("RANK", 0))
@@ -61,23 +21,44 @@ def create_pipeline():
     # 获取模型路径
     ckpt_dir = os.environ.get("MODEL_CKPT_DIR", "/path/to/your/ckpt")
     
+    # 🔥 添加调试日志
+    logger.info(f"Rank {rank}: Creating {device_type} Pipeline")
+    
     if device_type == "npu":
         from .npu_pipeline import NPUPipeline
-        return NPUPipeline(
-            ckpt_dir=ckpt_dir,  # 🔥 添加必需参数
+        pipeline = NPUPipeline(
+            ckpt_dir=ckpt_dir,
             rank=rank,
             world_size=world_size,
             use_distributed=(world_size > 1)
         )
+        logger.info(f"Rank {rank}: NPU Pipeline created successfully")
+        return pipeline
+        
     elif device_type == "cuda":
         from .cuda_pipeline import CUDAPipeline
-        return CUDAPipeline(ckpt_dir=ckpt_dir, rank=rank, world_size=world_size)
+        pipeline = CUDAPipeline(
+            ckpt_dir=ckpt_dir, 
+            rank=rank, 
+            world_size=world_size
+        )
+        logger.info(f"Rank {rank}: CUDA Pipeline created successfully")
+        return pipeline
+        
     else:
         from .cpu_pipeline import CPUPipeline
-        return CPUPipeline(ckpt_dir=ckpt_dir)  # 🔥 添加必需参数
+        pipeline = CPUPipeline(ckpt_dir=ckpt_dir)
+        logger.info(f"Rank {rank}: CPU Pipeline created successfully")
+        return pipeline
 
 def get_device_info() -> Dict[str, Any]:
-    return detect_device()
+    """获取设备信息 - 兼容性函数"""
+    device_type, device_count, backend = detect_device()
+    return {
+        "device_type": device_type,
+        "device_count": device_count,
+        "backend": backend
+    }
 
 __all__ = [
     "create_pipeline",
