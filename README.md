@@ -1,6 +1,23 @@
-# FastAPI Multi-GPU I2V Service
+# Wan FastAPI Multi-GPU Service
 
-基于 Wan2.1-I2V-14B-720P 模型的多卡分布式视频生成 API 服务，支持图像到视频（Image-to-Video）生成。采用模块化架构设计，支持华为昇腾 NPU 和 NVIDIA GPU 多卡分布式推理。
+基于 Wan2.1 模型的多卡分布式视频生成 API 服务，目前支持图像到视频（Image-to-Video）生成。采用模块化架构设计，支持华为昇腾 NPU 和 NVIDIA GPU 多卡分布式推理。
+
+## 📋 功能支持
+
+> **🎯 当前版本**: 专注于图像到视频（Image-to-Video, I2V）生成  
+> **🚀 后续规划**: 将支持文本到视频（Text-to-Video, T2V）生成  
+> **🔄 架构设计**: 模块化架构已为多模态扩展做好准备
+
+### 当前支持
+- ✅ **I2V 生成**: 基于输入图像生成高质量视频
+- ✅ **多卡分布式**: NPU/GPU 8卡并行推理
+- ✅ **异步处理**: 完整的任务队列和状态管理
+- ✅ **多设备支持**: 华为昇腾 NPU 和 NVIDIA GPU
+
+### 开发中
+- 🚧 **T2V 生成**: 纯文本提示词生成视频
+- 🚧 **多模态融合**: I2V + T2V 混合生成
+- 🚧 **视频编辑**: 基于现有视频的智能编辑
 
 ## 🚀 项目特色
 
@@ -76,28 +93,58 @@ wan-multigpu-i2v/
 
 ## 🛠️ 快速开始
 
-### 1. 项目初始化
+### 1. 下载 Wan2.1 模型
+
+#### NPU 环境 (华为昇腾)
+```bash
+# 下载 NPU 优化版本
+git clone https://modelers.cn/MindIE/Wan2.1.git
+cd Wan2.1
+
+# 安装依赖
+pip install -r requirements.txt
+pip install -e .
+
+# 验证安装
+python -c "import wan; print('✅ Wan2.1 NPU version installed')"
+```
+
+#### GPU 环境 (NVIDIA)
+```bash
+# 下载标准版本
+git clone https://github.com/Wan-Video/Wan2.1.git
+cd Wan2.1
+
+# 安装依赖
+pip install -r requirements.txt
+pip install -e .
+
+# 验证安装
+python -c "import wan; print('✅ Wan2.1 GPU version installed')"
+```
+
+### 2. 下载本项目并启动服务
 
 ```bash
-# 克隆项目
-git clone <repository-url>
-cd fastapi-multigpu-i2v
+# 下载本项目
+git clone <your-repository-url>
+cd wan-multigpu-i2v
 
 # 系统诊断 (推荐首次运行)
 python3 tools/diagnostic.py
 
-# 快速检查
+# 快速检查环境
 python3 tools/diagnostic.py --quick
 ```
 
-### 2. 环境配置
+### 3. 环境配置
 
 ```bash
-# 基础依赖
+# 安装API服务依赖
 pip install -r requirements.txt
 
-# 设置模型路径
-export MODEL_CKPT_DIR="/data/models/modelscope/hub/Wan-AI/Wan2.1-I2V-14B-720P"
+# 设置模型路径 (指向步骤1下载的模型)
+export MODEL_CKPT_DIR="/path/to/Wan2.1/checkpoints/i2v-14B"
 
 # T5 CPU 模式 (推荐，节省显存)
 export T5_CPU=true
@@ -107,7 +154,7 @@ export MAX_CONCURRENT_TASKS=2
 python3 tools/diagnostic.py --health
 ```
 
-### 3. 启动服务
+### 4. 启动服务
 
 ```bash
 # 智能启动 (自动检测设备)
@@ -115,7 +162,7 @@ chmod +x scripts/start_service.sh
 ./scripts/start_service.sh
 ```
 
-### 4. 服务验证
+### 5. 服务验证
 
 ```bash
 # 健康检查
