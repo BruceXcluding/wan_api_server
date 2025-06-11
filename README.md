@@ -159,14 +159,21 @@ python3 tools/diagnostic.py --health
 ### 4. 启动服务
 
 ```bash
-# 1. 自动模式（单卡CUDA自动选diffuser）
+# 基础启动（自动检测模型路径）
 ./scripts/start_service.sh
 
-# 2. 单卡高性能diffuser模式
-./scripts/start_service.sh --diffuser
+# 指定模型路径
+./scripts/start_service.sh --model-path /your/path/to/model
 
-# 3. 单卡原生模式
-./scripts/start_service.sh --single
+# 完整配置
+./scripts/start_service.sh \
+  --single \
+  --diffuser \ # 单卡高性能
+  --model-path /data/models/wan \
+  --port 8090
+
+# 查看帮助
+./scripts/start_service.sh --help
 ```
 
 ### 5. 服务验证

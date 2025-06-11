@@ -13,16 +13,73 @@ YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 NC='\033[0m'
 
-# 🔥 新增：检查命令行参数
+# 🔥 新增：显示帮助信息
+show_help() {
+    echo -e "${BLUE}Wan2.1 I2V Multi-Device API Server${NC}"
+    echo "=================================================="
+    echo ""
+    echo "用法: $0 [选项]"
+    echo ""
+    echo "选项："
+    echo "  --single, -s              强制单设备模式"
+    echo "  --diffuser, -d            强制使用Diffuser pipeline"
+    echo "  --model-path PATH         指定模型路径"
+    echo "  --port PORT               指定服务端口 (默认: 8088)"
+    echo "  --help, -h                显示此帮助信息"
+    echo ""
+    echo "环境变量："
+    echo "  MODEL_CKPT_DIR            模型检查点目录"
+    echo "  SERVER_PORT               服务端口"
+    echo "  T5_CPU                    T5使用CPU模式 (true/false)"
+    echo ""
+    echo "示例："
+    echo "  $0                                    # 自动检测启动"
+    echo "  $0 --single                          # 单设备模式"
+    echo "  $0 --diffuser                        # 强制Diffuser"
+    echo "  $0 --model-path /path/to/model       # 指定模型路径"
+    echo "  $0 --single --model-path /my/model   # 组合使用"
+    echo ""
+}
+
+# 🔥 新增：解析命令行参数
 FORCE_SINGLE_DEVICE=false
-if [[ "$1" == "--diffuser" ]] || [[ "$1" == "-d" ]]; then
-    export PIPELINE_TYPE="diffuser"
-    echo -e "${YELLOW}🎯 Force Diffuser pipeline mode${NC}"
-    FORCE_SINGLE_DEVICE=true  # diffuser目前只支持单卡
-elif [[ "$1" == "--single" ]] || [[ "$1" == "-s" ]]; then
-    FORCE_SINGLE_DEVICE=true
-    echo -e "${YELLOW}🎯 Force single-device mode enabled${NC}"
-fi
+CUSTOM_MODEL_PATH=""
+CUSTOM_PORT=""
+
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        --single|-s)
+            FORCE_SINGLE_DEVICE=true
+            echo -e "${YELLOW}🎯 Force single-device mode enabled${NC}"
+            shift
+            ;;
+        --diffuser|-d)
+            export PIPELINE_TYPE="diffuser"
+            FORCE_SINGLE_DEVICE=true  # diffuser目前只支持单卡
+            echo -e "${YELLOW}🎯 Force Diffuser pipeline mode${NC}"
+            shift
+            ;;
+        --model-path)
+            CUSTOM_MODEL_PATH="$2"
+            echo -e "${YELLOW}🎯 Custom model path: $CUSTOM_MODEL_PATH${NC}"
+            shift 2
+            ;;
+        --port)
+            CUSTOM_PORT="$2"
+            echo -e "${YELLOW}🎯 Custom server port: $CUSTOM_PORT${NC}"
+            shift 2
+            ;;
+        --help|-h)
+            show_help
+            exit 0
+            ;;
+        *)
+            echo -e "${RED}❌ Unknown option: $1${NC}"
+            echo "Use --help for usage information."
+            exit 1
+            ;;
+    esac
+done
 
 # 项目根目录
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -31,8 +88,38 @@ cd "$PROJECT_ROOT"
 echo -e "${BLUE}🚀 Wan2.1 I2V Multi-Device API Server${NC}"
 echo "=================================================="
 
+# 🔥 修改：智能模型路径检测
+if [ -n "$CUSTOM_MODEL_PATH" ]; then
+    export MODEL_CKPT_DIR="$CUSTOM_MODEL_PATH"
+elif [ -n "$MODEL_CKPT_DIR" ]; then
+    # 使用环境变量中的路径
+    export MODEL_CKPT_DIR="$MODEL_CKPT_DIR"
+else
+    # 🔥 按优先级尝试常见路径
+    POSSIBLE_PATHS=(
+        "/data/models/wan"
+        "/models/wan"
+        "$HOME/models/wan"
+    )
+    
+    export MODEL_CKPT_DIR=""
+    for path in "${POSSIBLE_PATHS[@]}"; do
+        if [ -d "$path" ]; then
+            export MODEL_CKPT_DIR="$path"
+            echo -e "${GREEN}✅ Found model at: $path${NC}"
+            break
+        fi
+    done
+    
+    # 如果都没找到，使用默认路径
+    if [ -z "$MODEL_CKPT_DIR" ]; then
+        export MODEL_CKPT_DIR="/data/models/modelscope/hub/Wan-AI/Wan2.1-I2V-14B-720P"
+        echo -e "${YELLOW}⚠️  No model found, using default path: $MODEL_CKPT_DIR${NC}"
+        echo -e "${YELLOW}   Model will be downloaded on first use${NC}"
+    fi
+fi
+
 # 默认配置
-export MODEL_CKPT_DIR="${MODEL_CKPT_DIR:-/data/models/modelscope/hub/Wan-AI/Wan2.1-I2V-14B-720P}"
 export T5_CPU="${T5_CPU:-true}"
 export DIT_FSDP="${DIT_FSDP:-true}"
 export T5_FSDP="${T5_FSDP:-false}"
@@ -47,7 +134,7 @@ export CACHE_END_STEP="${CACHE_END_STEP:-37}"
 export MAX_CONCURRENT_TASKS="${MAX_CONCURRENT_TASKS:-2}"
 export TASK_TIMEOUT="${TASK_TIMEOUT:-1800}"
 export SERVER_HOST="${SERVER_HOST:-0.0.0.0}"
-export SERVER_PORT="${SERVER_PORT:-8088}"
+export SERVER_PORT="${CUSTOM_PORT:-${SERVER_PORT:-8088}}"  # 🔥 支持自定义端口
 
 # 分布式配置
 export MASTER_ADDR="${MASTER_ADDR:-127.0.0.1}"
@@ -69,6 +156,35 @@ echo "  - Model Path: $MODEL_CKPT_DIR"
 echo "  - T5 CPU Mode: $T5_CPU"
 echo "  - Max Concurrent: $MAX_CONCURRENT_TASKS"
 echo "  - Server: $SERVER_HOST:$SERVER_PORT"
+echo "  - Pipeline: ${PIPELINE_TYPE:-auto}"  # 🔥 显示pipeline类型
+
+# 🔥 新增：模型路径验证
+echo -e "${BLUE}📁 Model Path Verification:${NC}"
+if [ -d "$MODEL_CKPT_DIR" ]; then
+    echo -e "  ✅ Model directory exists: $MODEL_CKPT_DIR"
+    
+    # 检查关键文件
+    if [ -f "$MODEL_CKPT_DIR/config.json" ]; then
+        echo "  ✅ config.json found"
+    else
+        echo "  ⚠️  config.json not found"
+    fi
+    
+    if [ -d "$MODEL_CKPT_DIR/vae" ]; then
+        echo "  ✅ vae subdirectory found"
+    else
+        echo "  ⚠️  vae subdirectory not found"
+    fi
+    
+    if [ -d "$MODEL_CKPT_DIR/image_encoder" ]; then
+        echo "  ✅ image_encoder subdirectory found"
+    else
+        echo "  ⚠️  image_encoder subdirectory not found"
+    fi
+else
+    echo -e "  ⚠️  Model directory not found: $MODEL_CKPT_DIR"
+    echo -e "  ℹ️  Model will be downloaded automatically on first use"
+fi
 
 # 验证项目结构
 echo -e "${BLUE}📁 Project Structure Check:${NC}"
@@ -449,6 +565,7 @@ echo "  - Device: $DEVICE_TYPE ($DEVICE_COUNT devices)"
 echo "  - Backend: $BACKEND"
 echo "  - Mode: $([ "$DEVICE_COUNT" -gt 1 ] && echo "MULTI-DEVICE" || echo "SINGLE-DEVICE")"
 echo "  - Distributed: $([ "$DEVICE_COUNT" -gt 1 ] && echo "YES" || echo "NO")"
+echo "  - Pipeline: ${PIPELINE_TYPE:-auto}"
 
 # 🔥 修改：启动服务（支持单卡选项）
 if [ "$DEVICE_COUNT" -gt 1 ]; then
