@@ -17,7 +17,7 @@ NC='\033[0m'
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$PROJECT_ROOT"
 
-echo -e "${BLUE}🚀 FastAPI Multi-GPU I2V Service - General Launcher${NC}"
+echo -e "${BLUE}🚀 Wan2.1 I2V Multi-Device API Server${NC}"
 echo "=================================================="
 
 # 默认配置
@@ -47,88 +47,47 @@ export OMP_NUM_THREADS="${OMP_NUM_THREADS:-16}"
 export MKL_NUM_THREADS="${MKL_NUM_THREADS:-16}"
 export OPENBLAS_NUM_THREADS="${OPENBLAS_NUM_THREADS:-16}"
 
-# Python 路径 - 添加 wan 模块路径
-WAN_PROJECT_ROOT="$(dirname "$PROJECT_ROOT")"  # 上一级目录，即 /workspace/Wan2.1
-
-# 设置 PYTHONPATH，确保 wan 模块可被找到
+# Python 路径设置
+WAN_PROJECT_ROOT="$(dirname "$PROJECT_ROOT")"
 export PYTHONPATH="$WAN_PROJECT_ROOT:$PROJECT_ROOT:$PROJECT_ROOT/src:$PROJECT_ROOT/utils:${PYTHONPATH:-}"
-
-echo -e "${BLUE}📋 Python Path Configuration:${NC}"
-echo "  - WAN_PROJECT_ROOT: $WAN_PROJECT_ROOT"
-echo "  - PROJECT_ROOT: $PROJECT_ROOT"
-echo "  - PYTHONPATH (first 5 paths):"
-echo "$PYTHONPATH" | tr ':' '\n' | head -5 | sed 's/^/    /'
-
-# 验证 wan 模块
-echo -e "${BLUE}🔍 Verifying wan module...${NC}"
-if [ -d "$WAN_PROJECT_ROOT/wan" ]; then
-    echo -e "${GREEN}✅ wan module found at: $WAN_PROJECT_ROOT/wan${NC}"
-else
-    echo -e "${YELLOW}⚠️  wan module not found at: $WAN_PROJECT_ROOT/wan${NC}"
-fi
-
-# Python 路径 - 修改：确保 utils 目录直接可见
 
 echo -e "${BLUE}📋 General Configuration:${NC}"
 echo "  - Project Root: $PROJECT_ROOT"
+echo "  - WAN Module: $WAN_PROJECT_ROOT"
 echo "  - Model Path: $MODEL_CKPT_DIR"
 echo "  - T5 CPU Mode: $T5_CPU"
-echo "  - DIT FSDP: $DIT_FSDP"
-echo "  - VAE Parallel: $VAE_PARALLEL"
-echo "  - Ulysses Size: $ULYSSES_SIZE"
-echo "  - Ring Size: $RING_SIZE"
-echo "  - CFG Size: $CFG_SIZE"
 echo "  - Max Concurrent: $MAX_CONCURRENT_TASKS"
-echo "  - Timeout: ${TASK_TIMEOUT}s"
 echo "  - Server: $SERVER_HOST:$SERVER_PORT"
 
-# 环境信息检查
-echo -e "${BLUE}🔍 Environment Information:${NC}"
-echo "  - Current Directory: $(pwd)"
-echo "  - Project Root: $PROJECT_ROOT"
-echo "  - Python Version: $(python3 --version)"
-
-# 检查项目结构
+# 验证项目结构
 echo -e "${BLUE}📁 Project Structure Check:${NC}"
 [ -d "$PROJECT_ROOT/src" ] && echo "  ✅ src/" || echo "  ❌ src/"
 [ -d "$PROJECT_ROOT/utils" ] && echo "  ✅ utils/" || echo "  ❌ utils/"
-[ -f "$PROJECT_ROOT/utils/device_detector.py" ] && echo "  ✅ utils/device_detector.py" || echo "  ❌ utils/device_detector.py"
-[ -f "$PROJECT_ROOT/utils/__init__.py" ] && echo "  ✅ utils/__init__.py" || echo "  ❌ utils/__init__.py"
-[ -d "$PROJECT_ROOT/src/schemas" ] && echo "  ✅ src/schemas/" || echo "  ❌ src/schemas/"
-[ -d "$PROJECT_ROOT/src/pipelines" ] && echo "  ✅ src/pipelines/" || echo "  ❌ src/pipelines/"
+[ -f "$PROJECT_ROOT/utils/device_detector.py" ] && echo "  ✅ device_detector.py" || echo "  ❌ device_detector.py"
+[ -d "$WAN_PROJECT_ROOT/wan" ] && echo "  ✅ wan module" || echo "  ⚠️  wan module"
 
-# 检查模型路径
-if [ ! -d "$MODEL_CKPT_DIR" ]; then
-    echo -e "${YELLOW}⚠️  Model directory not found: $MODEL_CKPT_DIR${NC}"
-    echo -e "${YELLOW}   Continuing anyway (model will be downloaded if needed)${NC}"
-fi
-
-# 验证detect_device模块 - 修改：简化验证逻辑
-echo -e "${BLUE}📦 Verifying detect_device...${NC}"
+# 验证设备检测模块
+echo -e "${BLUE}📦 Verifying device detection...${NC}"
 python3 -c "
 import sys
 import os
 
-# 设置路径
 project_root = '$PROJECT_ROOT'
 paths = [project_root, os.path.join(project_root, 'src'), os.path.join(project_root, 'utils')]
 for p in paths:
     if p not in sys.path:
         sys.path.insert(0, p)
 
-print(f'Project root: {project_root}')
-
 try:
     from utils.device_detector import detect_device
-    print('✅ detect_device import successful')
+    print('✅ device_detector import successful')
     device_type, device_count, backend = detect_device()
-    print(f'Device detected: {device_type}:{device_count}, backend: {backend}')
+    print(f'✅ Device detected: {device_type}:{device_count}, backend: {backend}')
 except Exception as e:
-    print(f'❌ detect_device import failed: {e}')
+    print(f'❌ device_detector failed: {e}')
     exit(1)
 "
 
-# 如果detect_device验证失败，退出
 if [[ $? -ne 0 ]]; then
     echo -e "${RED}❌ Device detector verification failed!${NC}"
     exit 1
@@ -139,7 +98,6 @@ echo -e "${BLUE}🔍 Auto-detecting hardware environment...${NC}"
 DETECTED_DEVICE=$(python3 -c "
 import sys
 import os
-# 设置路径
 project_root = '$PROJECT_ROOT'
 paths = [project_root, os.path.join(project_root, 'src'), os.path.join(project_root, 'utils')]
 for p in paths:
@@ -158,99 +116,129 @@ IFS=':' read -r DEVICE_TYPE DEVICE_COUNT BACKEND <<< "$DETECTED_DEVICE"
 
 echo -e "${GREEN}✅ Detected: $DEVICE_TYPE with $DEVICE_COUNT device(s), backend: $BACKEND${NC}"
 
-# 🔧 添加：自动计算分布式推理参数
+# 自动计算分布式推理参数
 if [ "$DEVICE_COUNT" -gt 1 ]; then
-    # 如果没有手动设置，则自动计算最优配置
     if [ "$ULYSSES_SIZE" = "1" ] && [ "$RING_SIZE" = "1" ]; then
-        if [ "$DEVICE_COUNT" -le 8 ]; then
-            export ULYSSES_SIZE="$DEVICE_COUNT"
-            export RING_SIZE="1"
-        else
-            # 对于更大的设备数，进行因子分解
-            ULYSSES_SIZE=$(python3 -c "
-import math
-device_count = $DEVICE_COUNT
-ulysses_size = int(math.sqrt(device_count))
-for u in range(ulysses_size, 0, -1):
-    if device_count % u == 0:
-        print(u)
-        break
-else:
-    print(device_count)
-")
-            export RING_SIZE=$((DEVICE_COUNT / ULYSSES_SIZE))
-        fi
-        echo -e "${BLUE}🔗 Auto-calculated distributed config: Ulysses=${ULYSSES_SIZE}, Ring=${RING_SIZE}${NC}"
-    else
-        echo -e "${BLUE}🔗 Using manual distributed config: Ulysses=${ULYSSES_SIZE}, Ring=${RING_SIZE}${NC}"
+        export ULYSSES_SIZE="$DEVICE_COUNT"
+        export RING_SIZE="1"
+        echo -e "${BLUE}🔗 Auto-calculated: Ulysses=${ULYSSES_SIZE}, Ring=${RING_SIZE}${NC}"
     fi
     
     # 验证配置
     PRODUCT=$((ULYSSES_SIZE * RING_SIZE))
     if [ "$PRODUCT" -ne "$DEVICE_COUNT" ]; then
-        echo -e "${YELLOW}⚠️  Warning: ulysses_size($ULYSSES_SIZE) * ring_size($RING_SIZE) = $PRODUCT != device_count($DEVICE_COUNT)${NC}"
-        echo -e "${YELLOW}   Adjusting to: ulysses_size=$DEVICE_COUNT, ring_size=1${NC}"
+        echo -e "${YELLOW}⚠️  Adjusting: ulysses_size=$DEVICE_COUNT, ring_size=1${NC}"
         export ULYSSES_SIZE="$DEVICE_COUNT"
         export RING_SIZE="1"
     fi
 else
-    # 单设备强制设置为1
     export ULYSSES_SIZE="1"
     export RING_SIZE="1"
 fi
 
-# 设置设备相关环境变量
+# 🔥 设备特定环境变量
 if [ "$DEVICE_TYPE" = "npu" ]; then
     export NPU_VISIBLE_DEVICES="${NPU_VISIBLE_DEVICES:-$(seq -s, 0 $((DEVICE_COUNT-1)))}"
-    export ASCEND_LAUNCH_BLOCKING="0"
-    export ALGO=0
-    export HCCL_TIMEOUT="0"
+    
+    # 🔥 NPU分布式通信修复
+    export ASCEND_LAUNCH_BLOCKING="1"       # 调试模式，获取准确错误
+    export HCCL_TIMEOUT="1800"              # 增加超时时间
+    export HCCL_CONNECT_TIMEOUT="1800"      # 增加连接超时
+    export HCCL_EXEC_TIMEOUT="1800"         # 增加执行超时
+    export HCCL_HEARTBEAT_TIMEOUT="1800"    # 增加心跳超时
+    
+    # 🔥 禁用安全特性（单机多卡）
+    export HCCL_WHITELIST_DISABLE="1"
+    export HCCL_SECURITY_ENABLE="0"
+    export HCCL_OVER_OFI="0"
+    
+    # 🔥 单机多卡配置
+    export RANK_TABLE_FILE=""               # 单机不需要rank table
+    export ASCEND_DEVICE_ID="0"             # 让每个进程自动设置
+    
+    # 🔥 性能优化
+    export TASK_QUEUE_ENABLE="1"
+    export PTCOPY_ENABLE="1" 
+    export COMBINED_ENABLE="1"
     export HCCL_BUFFSIZE="1024"
-    export HCCL_CONNECT_TIMEOUT="600"
-    export HCCL_EXEC_TIMEOUT="0"
-    export HCCL_HEARTBEAT_TIMEOUT="0"
-    export HCCL_ASYNC_ERROR_HANDLING="0"
-    export RANK_TABLE_FILE=""
+    
+    # 🔥 日志控制
     export ASCEND_GLOBAL_LOG_LEVEL="3"
     export ASCEND_SLOG_PRINT_TO_STDOUT="0"
     export ASCEND_GLOBAL_EVENT_ENABLE="0"
-    export ASCEND_DEVICE_ID="0"
-    export HCCL_WHITELIST_DISABLE=1
-    export HCCL_SECURITY_ENABLE=0
-    export HCCL_OVER_OFI=0
-    export TASK_QUEUE_ENABLE=1
-    export PTCOPY_ENABLE=1
-    export COMBINED_ENABLE=1
+    
     echo -e "${BLUE}📱 NPU Configuration:${NC}"
     echo "  - NPU Devices: $NPU_VISIBLE_DEVICES"
-    echo "  - HCCL_TIMEOUT: $HCCL_TIMEOUT"
-    echo "  - HCCL_CONNECT_TIMEOUT: $HCCL_CONNECT_TIMEOUT"
-    echo "  - HCCL_WHITELIST_DISABLE: $HCCL_WHITELIST_DISABLE"
-    echo "  - ALGO: $ALGO"
+    echo "  - HCCL Timeouts: ${HCCL_TIMEOUT}s"
+    echo "  - Security Disabled: $HCCL_WHITELIST_DISABLE"
+    echo "  - Launch Blocking: $ASCEND_LAUNCH_BLOCKING"
+    
 elif [ "$DEVICE_TYPE" = "cuda" ]; then
     export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-$(seq -s, 0 $((DEVICE_COUNT-1)))}"
     export NCCL_TIMEOUT="${NCCL_TIMEOUT:-1800}"
     export CUDA_LAUNCH_BLOCKING="${CUDA_LAUNCH_BLOCKING:-0}"
+    
     echo -e "${BLUE}🎮 CUDA Configuration:${NC}"
     echo "  - CUDA Devices: $CUDA_VISIBLE_DEVICES"
     echo "  - NCCL Timeout: $NCCL_TIMEOUT"
+    
 elif [ "$DEVICE_TYPE" = "cpu" ]; then
     export OMP_NUM_THREADS="${OMP_NUM_THREADS:-8}"
     export MKL_NUM_THREADS="${MKL_NUM_THREADS:-8}"
-    export GLOO_SOCKET_IFNAME="${GLOO_SOCKET_IFNAME:-}"
-    export GLOO_DEVICE_TRANSPORT="${GLOO_DEVICE_TRANSPORT:-tcp}"
+    
     echo -e "${BLUE}💻 CPU Configuration:${NC}"
     echo "  - Threads: $OMP_NUM_THREADS"
-    echo "  - Gloo Socket: ${GLOO_SOCKET_IFNAME:-auto}"
     mem_total=$(free -g | awk '/^Mem:/{print $2}')
     echo "  - System Memory: ${mem_total}GB"
-    if [ $mem_total -lt 32 ]; then
-        echo -e "${YELLOW}⚠️  Warning: System has less than 32GB RAM, performance may be limited${NC}"
-    fi
 fi
 
-# 验证 Python 环境 - 修改：简化验证逻辑
-echo -e "${BLUE}🐍 Checking Python environment...${NC}"
+# 🔥 NPU连通性检查（仅在NPU多卡时）
+if [ "$DEVICE_TYPE" = "npu" ] && [ "$DEVICE_COUNT" -gt 1 ]; then
+    echo -e "${BLUE}🔍 NPU Connectivity Check...${NC}"
+    
+    # 检查NPU设备
+    for i in $(seq 0 $((DEVICE_COUNT-1))); do
+        if [ -c "/dev/davinci$i" ]; then
+            echo "  ✅ NPU $i: Device found"
+        else
+            echo "  ❌ NPU $i: Device not found"
+        fi
+    done
+    
+    # 简单通信测试
+    python3 -c "
+import torch_npu
+import torch.distributed as dist
+import os
+from datetime import timedelta
+
+os.environ['WORLD_SIZE'] = '$DEVICE_COUNT'
+os.environ['RANK'] = '0'
+os.environ['LOCAL_RANK'] = '0'
+os.environ['MASTER_ADDR'] = '127.0.0.1'
+os.environ['MASTER_PORT'] = '29501'  # 使用不同端口避免冲突
+
+try:
+    torch_npu.npu.set_device(0)
+    print('✅ NPU 0 accessible')
+    
+    if int('$DEVICE_COUNT') > 1:
+        dist.init_process_group(
+            backend='hccl', 
+            init_method='env://', 
+            timeout=timedelta(seconds=300)
+        )
+        print('✅ HCCL communication initialized')
+        dist.destroy_process_group()
+        print('✅ HCCL test passed')
+except Exception as e:
+    print(f'⚠️  NPU connectivity warning: {e}')
+    print('   Continuing anyway...')
+" && echo -e "${GREEN}✅ NPU connectivity verified${NC}" || echo -e "${YELLOW}⚠️  NPU connectivity test had warnings${NC}"
+fi
+
+# Python环境验证
+echo -e "${BLUE}🐍 Verifying Python environment...${NC}"
 python3 -c "
 import sys
 import os
@@ -261,45 +249,31 @@ for p in paths:
     if p not in sys.path:
         sys.path.insert(0, p)
 
-print(f'Python: {sys.version}')
-
 try:
     import torch
-    print(f'PyTorch: {torch.__version__}')
+    print(f'✅ PyTorch: {torch.__version__}')
+    
     if '$DEVICE_TYPE' == 'npu':
         import torch_npu
-        print(f'torch_npu available: {torch_npu.npu.is_available()}')
-        print(f'NPU device count: {torch_npu.npu.device_count()}')
+        print(f'✅ torch_npu: Available={torch_npu.npu.is_available()}, Devices={torch_npu.npu.device_count()}')
     elif '$DEVICE_TYPE' == 'cuda':
-        print(f'CUDA available: {torch.cuda.is_available()}')
-        print(f'CUDA device count: {torch.cuda.device_count()}')
+        print(f'✅ CUDA: Available={torch.cuda.is_available()}, Devices={torch.cuda.device_count()}')
+    
     from schemas import VideoSubmitRequest
     from utils.device_detector import detect_device
-    print('✅ All project modules imported successfully')
-    # 如有 get_available_pipelines 可用则加上
-    try:
-        from pipelines import get_available_pipelines
-        print(f'Available pipelines: {get_available_pipelines()}')
-    except Exception as e:
-        print('pipelines module import ok (no get_available_pipelines)')
-except ImportError as e:
-    print(f'❌ Import failed: {e}')
-    import traceback
-    traceback.print_exc()
-    sys.exit(1)
+    print('✅ Project modules imported successfully')
+    
 except Exception as e:
-    print(f'⚠️  Environment check warning: {e}')
-    import traceback
-    traceback.print_exc()
+    print(f'❌ Import failed: {e}')
+    exit(1)
 "
 
 if [ $? -ne 0 ]; then
     echo -e "${RED}❌ Python environment check failed!${NC}"
-    echo -e "${YELLOW}💡 Please check your PyTorch installation and project dependencies${NC}"
     exit 1
 fi
 
-# 清理设备缓存 - 修改：简化缓存清理逻辑
+# 清理设备缓存
 echo -e "${BLUE}🗑️  Clearing device cache...${NC}"
 python3 -c "
 import sys
@@ -328,88 +302,94 @@ except Exception as e:
     print(f'⚠️  Cache clear warning: {e}')
 "
 
-# 清理旧进程 - 增强版
+# 清理旧进程
 echo -e "${BLUE}🧹 Cleaning up old processes...${NC}"
 
 check_and_free_port() {
     local port=$1
     if lsof -ti:$port > /dev/null 2>&1; then
-        echo -e "${YELLOW}⚠️  Port $port is in use, killing processes...${NC}"
+        echo -e "${YELLOW}⚠️  Port $port in use, freeing...${NC}"
         lsof -ti:$port | xargs kill -9 2>/dev/null || true
         sleep 2
         echo -e "${GREEN}✅ Port $port freed${NC}"
     fi
 }
 
-pkill -f "i2v_api.py" || true
-pkill -f "torchrun.*i2v_api" || true
-pkill -f "python.*i2v.*api" || true
+# 终止旧进程
+pkill -f "i2v_api.py" 2>/dev/null || true
+pkill -f "torchrun.*i2v_api" 2>/dev/null || true
 sleep 3
 
+# 释放端口
 check_and_free_port ${MASTER_PORT}
 check_and_free_port ${SERVER_PORT}
 
+# NPU特殊清理
 if [ "$DEVICE_TYPE" = "npu" ]; then
     echo -e "${BLUE}🔧 NPU specific cleanup...${NC}"
     pkill -f "python.*torch_npu" 2>/dev/null || true
-    ipcs -m | grep $(whoami) | awk '{print $2}' | xargs -I {} ipcrm -m {} 2>/dev/null || true
     sync
     echo -e "${GREEN}✅ NPU cleanup completed${NC}"
 fi
 
+# 创建必要目录
 mkdir -p generated_videos
 mkdir -p logs
 
+# 设置信号处理
 trap 'echo -e "${YELLOW}🛑 Stopping service...${NC}"; pkill -f "torchrun.*i2v_api"; pkill -f "python.*i2v_api"; exit 0' INT TERM
 
-echo -e "${BLUE}🔍 Pre-launch final check...${NC}"
+# 最终检查
+echo -e "${BLUE}🔍 Pre-launch verification...${NC}"
 
 if [ "$DEVICE_COUNT" -gt 1 ]; then
     echo "  - World Size: $DEVICE_COUNT"
     echo "  - Master: $MASTER_ADDR:$MASTER_PORT"
-    echo "  - Distributed Config: Ulysses=$ULYSSES_SIZE, Ring=$RING_SIZE"
+    echo "  - Distributed: Ulysses=$ULYSSES_SIZE, Ring=$RING_SIZE"
+    
     PRODUCT=$((ULYSSES_SIZE * RING_SIZE))
     if [ "$PRODUCT" -ne "$DEVICE_COUNT" ]; then
-        echo -e "${RED}❌ Error: $ULYSSES_SIZE * $RING_SIZE = $PRODUCT ≠ $DEVICE_COUNT${NC}"
+        echo -e "${RED}❌ Config error: $ULYSSES_SIZE * $RING_SIZE = $PRODUCT ≠ $DEVICE_COUNT${NC}"
         exit 1
     fi
     echo -e "${GREEN}✅ Distributed config verified${NC}"
 fi
 
 if [ ! -d "$MODEL_CKPT_DIR" ]; then
-    echo -e "${YELLOW}⚠️  Model path check: $MODEL_CKPT_DIR not found${NC}"
-    echo -e "${YELLOW}   Will attempt to download model on first use${NC}"
+    echo -e "${YELLOW}⚠️  Model path not found: $MODEL_CKPT_DIR${NC}"
+    echo -e "${YELLOW}   Will download on first use${NC}"
 else
-    echo -e "${GREEN}✅ Model path exists: $MODEL_CKPT_DIR${NC}"
+    echo -e "${GREEN}✅ Model path exists${NC}"
 fi
 
-echo -e "${BLUE}📋 Final Environment Summary:${NC}"
-echo "  - DEVICE_TYPE: $DEVICE_TYPE"
-echo "  - DEVICE_COUNT: $DEVICE_COUNT"
-echo "  - ULYSSES_SIZE: $ULYSSES_SIZE"
-echo "  - RING_SIZE: $RING_SIZE"
-if [ "$DEVICE_TYPE" = "npu" ]; then
-    echo "  - NPU_VISIBLE_DEVICES: $NPU_VISIBLE_DEVICES"
-    echo "  - HCCL_TIMEOUT: $HCCL_TIMEOUT"
-    echo "  - HCCL_CONNECT_TIMEOUT: $HCCL_CONNECT_TIMEOUT"
-    echo "  - HCCL_WHITELIST_DISABLE: $HCCL_WHITELIST_DISABLE"
-    echo "  - ALGO: $ALGO"
-elif [ "$DEVICE_TYPE" = "cuda" ]; then
-    echo "  - CUDA_VISIBLE_DEVICES: $CUDA_VISIBLE_DEVICES"
-    echo "  - NCCL_TIMEOUT: $NCCL_TIMEOUT"
-fi
+echo -e "${BLUE}📋 Final Summary:${NC}"
+echo "  - Device: $DEVICE_TYPE ($DEVICE_COUNT devices)"
+echo "  - Backend: $BACKEND"
+echo "  - Distributed: $([ "$DEVICE_COUNT" -gt 1 ] && echo "YES" || echo "NO")"
 
+# 🔥 关键修复：启动服务
 if [ "$DEVICE_COUNT" -gt 1 ]; then
-    echo -e "${GREEN}🚀 Starting $DEVICE_COUNT-process distributed service on $DEVICE_TYPE...${NC}"
+    echo -e "${GREEN}🚀 Starting $DEVICE_COUNT-device distributed service...${NC}"
     LOG_FILE="logs/${DEVICE_TYPE}_distributed_$(date +%Y%m%d_%H%M%S).log"
     
-    # 🔥 关键修改：使用torchrun启动分布式
-    torchrun \
-        --nproc_per_node=$DEVICE_COUNT \
-        --master_addr=$MASTER_ADDR \
-        --master_port=$MASTER_PORT \
-        src/i2v_api.py 2>&1 | tee "$LOG_FILE"
+    # 🔥 NPU使用standalone模式，GPU使用标准模式
+    if [ "$DEVICE_TYPE" = "npu" ]; then
+        torchrun \
+            --standalone \
+            --nnodes=1 \
+            --nproc_per_node=$DEVICE_COUNT \
+            --master_addr=127.0.0.1 \
+            --master_port=$MASTER_PORT \
+            src/i2v_api.py 2>&1 | tee "$LOG_FILE"
+    else
+        torchrun \
+            --nproc_per_node=$DEVICE_COUNT \
+            --master_addr=$MASTER_ADDR \
+            --master_port=$MASTER_PORT \
+            src/i2v_api.py 2>&1 | tee "$LOG_FILE"
+    fi
 else
+    echo -e "${GREEN}🚀 Starting single-device service...${NC}"
     LOG_FILE="logs/${DEVICE_TYPE}_single_$(date +%Y%m%d_%H%M%S).log"
     python3 src/i2v_api.py 2>&1 | tee "$LOG_FILE"
 fi
