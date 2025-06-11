@@ -56,10 +56,14 @@ class CUDAPipeline(BasePipeline):
     def _generate_video_device_specific(self, request, img, progress_callback=None):
         logger.info(f"Rank {self.rank}: Generating video on CUDA with WanI2V")
         
-        # 🔥 修复：改为位置参数+关键字参数方式，和NPUPipeline一致
+        # 🔥 记录负面提示词但不使用（因为WanI2V不支持）
+        negative_prompt = getattr(request, "negative_prompt", "")
+        if negative_prompt and self.rank == 0:
+            logger.warning(f"negative_prompt '{negative_prompt}' ignored - WanI2V doesn't support this parameter") 
+
         video = self.model.generate(
-            request.prompt,                                    # 第一个位置参数
-            img,                                              # 第二个位置参数
+            request.prompt,
+            img,
             max_area=MAX_AREA_CONFIGS.get(getattr(request, "image_size", "1280*720"), 1280*720),
             frame_num=getattr(request, "num_frames", 81),
             shift=getattr(request, "sample_shift", 5.0),
@@ -68,7 +72,6 @@ class CUDAPipeline(BasePipeline):
             guide_scale=getattr(request, "sample_guide_scale", 5.0),
             seed=getattr(request, "seed", 42),
             offload_model=getattr(request, "offload_model", self.offload_model),
-            negative_prompt=getattr(request, "negative_prompt", None),
             # 进度回调
             progress_callback=progress_callback if progress_callback else None,
         )
