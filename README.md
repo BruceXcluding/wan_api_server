@@ -127,8 +127,8 @@ python -c "import wan; print('✅ Wan2.1 GPU version installed')"
 
 ```bash
 # 下载本项目
-git clone <your-repository-url>
-cd wan-multigpu-i2v
+git clone https://github.com/BruceXcluding/wan_api_server.git
+cd wan-api-server
 
 # 系统诊断 (推荐首次运行)
 python3 tools/diagnostic.py
