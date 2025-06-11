@@ -51,38 +51,29 @@ class CUDAPipeline(BasePipeline):
             t5_cpu=self.t5_cpu,
             use_vae_parallel=self.vae_parallel,
         )
-        model.eval()
         return model
 
     def _generate_video_device_specific(self, request, img, progress_callback=None):
         logger.info(f"Rank {self.rank}: Generating video on CUDA with WanI2V")
-        gen_args = {
-            "prompt": request.prompt,
-            "img": img,
-            "max_area": MAX_AREA_CONFIGS.get(getattr(request, "image_size", "1280*720"), 1280*720),
-            "frame_num": getattr(request, "num_frames", 81),
-            "shift": getattr(request, "sample_shift", 5.0),
-            "sample_solver": getattr(request, "sample_solver", "unipc"),
-            "sampling_steps": getattr(request, "sample_steps", 40),
-            "guide_scale": getattr(request, "sample_guide_scale", 5.0),
-            "seed": getattr(request, "seed", 42),
-            "offload_model": getattr(request, "offload_model", self.offload_model),
-            "t5_fsdp": self.t5_fsdp,
-            "dit_fsdp": self.dit_fsdp,
-            "cfg_size": self.cfg_size,
-            "ulysses_size": self.ulysses_size,
-            "vae_parallel": self.vae_parallel,
-            "use_attentioncache": getattr(request, "use_attentioncache", False),
-            "start_step": getattr(request, "start_step", 12),
-            "attentioncache_interval": getattr(request, "attentioncache_interval", 4),
-            "end_step": getattr(request, "end_step", 37),
-            "negative_prompt": getattr(request, "negative_prompt", None),
-        }
-        if progress_callback:
-            gen_args["progress_callback"] = progress_callback
-        video = self.model.generate(**gen_args)
+        
+        # 🔥 修复：改为位置参数+关键字参数方式，和NPUPipeline一致
+        video = self.model.generate(
+            request.prompt,                                    # 第一个位置参数
+            img,                                              # 第二个位置参数
+            max_area=MAX_AREA_CONFIGS.get(getattr(request, "image_size", "1280*720"), 1280*720),
+            frame_num=getattr(request, "num_frames", 81),
+            shift=getattr(request, "sample_shift", 5.0),
+            sample_solver=getattr(request, "sample_solver", "unipc"),
+            sampling_steps=getattr(request, "sample_steps", 40),
+            guide_scale=getattr(request, "sample_guide_scale", 5.0),
+            seed=getattr(request, "seed", 42),
+            offload_model=getattr(request, "offload_model", self.offload_model),
+            negative_prompt=getattr(request, "negative_prompt", None),
+            # 进度回调
+            progress_callback=progress_callback if progress_callback else None,
+        )
         return video
-
+    
     def _save_video(self, video_tensor, output_path: str):
         logger.info(f"Saving video to {output_path}")
         try:
