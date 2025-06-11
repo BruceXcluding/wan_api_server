@@ -1,4 +1,4 @@
-# Wan FastAPI Multi-GPU Service
+# Wan2.1 Multi-Device Distributed Service
 
 基于 Wan2.1 模型的多卡分布式视频生成 API 服务，目前支持图像到视频（Image-to-Video）生成。采用模块化架构设计，支持华为昇腾 NPU 和 NVIDIA GPU 多卡分布式推理。
 
@@ -33,7 +33,7 @@
 ## 📁 项目结构
 
 ```
-wan-multigpu-i2v/
+wan-api-server/
 ├── src/                              # 🎯 核心源码
 │   ├── i2v_api.py                    # FastAPI 主应用
 │   ├── schemas/                      # 📋 数据模型
