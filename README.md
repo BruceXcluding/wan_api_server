@@ -11,7 +11,9 @@
 ### 当前支持
 - ✅ **I2V 生成**: 基于输入图像生成高质量视频
 - ✅ **多卡分布式**: NPU/GPU 8卡并行推理
+- ✅ **单卡模式**: 支持单设备运行，自动优化配置
 - ✅ **异步处理**: 完整的任务队列和状态管理
+- ✅ **任务控制**: 支持任务取消、进度监控和实时状态
 - ✅ **多设备支持**: 华为昇腾 NPU 和 NVIDIA GPU
 
 ### 开发中
@@ -160,6 +162,9 @@ python3 tools/diagnostic.py --health
 # 智能启动 (自动检测设备)
 chmod +x scripts/start_service.sh
 ./scripts/start_service.sh
+
+# 单卡模式启动 (强制使用单设备)
+./scripts/start_service.sh --single
 ```
 
 ### 5. 服务验证
@@ -167,6 +172,9 @@ chmod +x scripts/start_service.sh
 ```bash
 # 健康检查
 curl http://localhost:8088/health
+
+# 🔥 实时监控
+curl http://localhost:8088/monitor
 
 # API 文档
 open http://localhost:8088/docs
@@ -270,9 +278,12 @@ export PYTORCH_NPU_ALLOC_CONF="expandable_segments:True"
 | 端点 | 方法 | 功能 |
 |------|------|------|
 | `/submit` | POST | 提交视频生成任务 |
+| `/batch_submit` | POST | 批量提交任务 |
 | `/status/{task_id}` | GET | 查询任务状态 |
+| `/cancel/{task_id}` | POST | 取消指定任务 |
+| `/cancel_all` | POST | 取消所有任务 |
+| `/monitor` | GET | 实时任务监控 |
 | `/health` | GET | 服务健康检查 |
-| `/metrics` | GET | 性能监控指标 |
 | `/docs` | GET | API 文档 |
 
 ### 请求示例
@@ -283,12 +294,18 @@ curl -X POST http://localhost:8088/submit \
   -H "Content-Type: application/json" \
   -d '{
     "prompt": "A cat walking in the garden",
-    "image_url": "https://picsum.photos/512/512",
+    "image_path": "examples/cat.jpg",
     "image_size": "512*512",
     "num_frames": 41
   }'
 
-# 查询状态
+# 取消任务
+curl -X POST http://localhost:8088/cancel/your-task-id
+
+# 实时监控
+curl http://localhost:8088/monitor
+
+# 查询状态（支持详细进度）
 curl http://localhost:8088/status/your-task-id
 
 # 健康检查
@@ -300,12 +317,13 @@ curl http://localhost:8088/health
 | 参数 | 类型 | 默认值 | 说明 |
 |------|------|--------|------|
 | `prompt` | string | - | 视频描述提示词 |
-| `image_url` | string | - | 输入图像地址 |
+| `image_path` | string | - | 输入图像路径(支持本地和URL) |
 | `image_size` | string | "512*512" | 输出视频分辨率 |
 | `num_frames` | int | 41 | 视频帧数 |
 | `guidance_scale` | float | 3.0 | CFG 引导系数 |
-| `infer_steps` | int | 30 | 推理步数 |
+| `sample_steps` | int | 30 | 推理步数 |
 | `seed` | int | null | 随机数种子 |
+| `negative_prompt` | string | "" | 负面提示词 |
 
 ## 📊 性能参考
 
@@ -406,6 +424,16 @@ python3 tests/benchmark.py --quick
 - **生产环境**: 根据硬件资源调整并发数
 - **测试环境**: 使用快速模式减少测试时间
 
+### 运行模式选择
+- **开发/测试**: 使用单卡模式 `--single`，稳定可靠
+- **生产环境**: 使用多卡模式，性能最优
+- **故障排除**: 先尝试单卡模式确认基本功能
+
+### 任务管理建议
+- **监控**: 定期检查 `/monitor` 接口
+- **取消**: 及时取消不需要的任务节省资源
+- **进度**: 通过 `/status` 接口跟踪详细进度
+
 ## 🤝 贡献指南
 
 ### 开发流程
@@ -449,6 +477,7 @@ git commit -m "feat: your amazing feature"
 - [ ] 启用T5 CPU模式: `export T5_CPU=true`
 - [ ] 启动服务: `./scripts/start_service.sh`
 - [ ] 验证健康: `curl http://localhost:8088/health`
+- [ ] 检查监控: `curl http://localhost:8088/monitor`
 - [ ] 性能测试: `python3 tests/benchmark.py --quick`
 
 **🌟 开始你的 AI 视频生成之旅！**

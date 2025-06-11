@@ -13,6 +13,13 @@ YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 NC='\033[0m'
 
+# 🔥 新增：检查命令行参数
+FORCE_SINGLE_DEVICE=false
+if [[ "$1" == "--single" ]] || [[ "$1" == "-s" ]]; then
+    FORCE_SINGLE_DEVICE=true
+    echo -e "${YELLOW}🎯 Force single-device mode enabled${NC}"
+fi
+
 # 项目根目录
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$PROJECT_ROOT"
@@ -114,7 +121,25 @@ except Exception as e:
 
 IFS=':' read -r DEVICE_TYPE DEVICE_COUNT BACKEND <<< "$DETECTED_DEVICE"
 
-echo -e "${GREEN}✅ Detected: $DEVICE_TYPE with $DEVICE_COUNT device(s), backend: $BACKEND${NC}"
+# 🔥 新增：单卡模式强制设置
+if [ "$FORCE_SINGLE_DEVICE" = true ]; then
+    echo -e "${YELLOW}🎯 Forcing single-device mode...${NC}"
+    DEVICE_COUNT=1
+    export WORLD_SIZE=1
+    export RANK=0
+    export LOCAL_RANK=0
+    
+    # 单卡专用环境变量
+    if [ "$DEVICE_TYPE" = "npu" ]; then
+        export NPU_VISIBLE_DEVICES="0"
+    elif [ "$DEVICE_TYPE" = "cuda" ]; then
+        export CUDA_VISIBLE_DEVICES="0"
+    fi
+    
+    echo -e "${GREEN}✅ Single-device mode: Using only ${DEVICE_TYPE}:0${NC}"
+else
+    echo -e "${GREEN}✅ Detected: $DEVICE_TYPE with $DEVICE_COUNT device(s), backend: $BACKEND${NC}"
+fi
 
 # 自动计算分布式推理参数
 if [ "$DEVICE_COUNT" -gt 1 ]; then
@@ -134,6 +159,14 @@ if [ "$DEVICE_COUNT" -gt 1 ]; then
 else
     export ULYSSES_SIZE="1"
     export RING_SIZE="1"
+    
+    # 🔥 新增：单卡模式禁用分布式特性
+    if [ "$FORCE_SINGLE_DEVICE" = true ]; then
+        export T5_FSDP="false"
+        export DIT_FSDP="false"
+        export VAE_PARALLEL="false"
+        echo -e "${BLUE}🎯 Single-device: FSDP and parallel features disabled${NC}"
+    fi
 fi
 
 # 🔥 设备特定环境变量
@@ -178,15 +211,31 @@ if [ "$DEVICE_TYPE" = "npu" ]; then
     export ASCEND_GLOBAL_EVENT_ENABLE="0"
     export HCCL_DEBUG="0"
     
-    echo -e "${BLUE}📱 NPU Configuration (Enhanced):${NC}"
-    echo "  - NPU Devices: $NPU_VISIBLE_DEVICES"
-    echo "  - ALGO: $ALGO"
-    echo "  - PYTORCH_NPU_ALLOC_CONF: $PYTORCH_NPU_ALLOC_CONF"
-    echo "  - TASK_QUEUE_ENABLE: $TASK_QUEUE_ENABLE"
-    echo "  - CPU_AFFINITY_CONF: $CPU_AFFINITY_CONF"
-    echo "  - TOKENIZERS_PARALLELISM: $TOKENIZERS_PARALLELISM"
-    echo "  - HCCL Timeouts: ${HCCL_TIMEOUT}s"
-    echo "  - Single Node Mode: $HCCL_SINGLE_NODE"
+    # 🔥 新增：单卡模式下的简化配置
+    if [ "$DEVICE_COUNT" -eq 1 ]; then
+        echo -e "${BLUE}📱 NPU Single-Device Configuration:${NC}"
+        echo "  - NPU Device: 0"
+        echo "  - ALGO: $ALGO"
+        echo "  - Memory: expandable_segments"
+        echo "  - Mode: Single NPU (no HCCL)"
+        
+        # 单卡模式禁用HCCL相关设置
+        unset HCCL_TIMEOUT
+        unset HCCL_CONNECT_TIMEOUT
+        unset HCCL_EXEC_TIMEOUT
+        unset HCCL_HEARTBEAT_TIMEOUT
+        export HCCL_DISABLE="1"
+    else
+        echo -e "${BLUE}📱 NPU Multi-Device Configuration:${NC}"
+        echo "  - NPU Devices: $NPU_VISIBLE_DEVICES"
+        echo "  - ALGO: $ALGO"
+        echo "  - PYTORCH_NPU_ALLOC_CONF: $PYTORCH_NPU_ALLOC_CONF"
+        echo "  - TASK_QUEUE_ENABLE: $TASK_QUEUE_ENABLE"
+        echo "  - CPU_AFFINITY_CONF: $CPU_AFFINITY_CONF"
+        echo "  - TOKENIZERS_PARALLELISM: $TOKENIZERS_PARALLELISM"
+        echo "  - HCCL Timeouts: ${HCCL_TIMEOUT}s"
+        echo "  - Single Node Mode: $HCCL_SINGLE_NODE"
+    fi
     
 elif [ "$DEVICE_TYPE" = "cuda" ]; then
     export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-$(seq -s, 0 $((DEVICE_COUNT-1)))}"
@@ -207,7 +256,7 @@ elif [ "$DEVICE_TYPE" = "cpu" ]; then
     echo "  - System Memory: ${mem_total}GB"
 fi
 
-# 🔥 NPU连通性检查（仅在NPU多卡时）
+# 🔥 NPU连通性检查（修改：只在多卡时执行）
 if [ "$DEVICE_TYPE" = "npu" ] && [ "$DEVICE_COUNT" -gt 1 ]; then
     echo -e "${BLUE}🔍 NPU Connectivity Check...${NC}"
     
@@ -250,6 +299,20 @@ except Exception as e:
     print(f'⚠️  NPU connectivity warning: {e}')
     print('   Continuing anyway...')
 " && echo -e "${GREEN}✅ NPU connectivity verified${NC}" || echo -e "${YELLOW}⚠️  NPU connectivity test had warnings${NC}"
+
+# 🔥 新增：单卡NPU检查
+elif [ "$DEVICE_TYPE" = "npu" ] && [ "$DEVICE_COUNT" -eq 1 ]; then
+    echo -e "${BLUE}🔍 NPU Single-Device Check...${NC}"
+    python3 -c "
+import torch_npu
+try:
+    torch_npu.npu.set_device(0)
+    print('✅ NPU 0 accessible')
+    print('ℹ️  Single-device mode: No HCCL communication needed')
+except Exception as e:
+    print(f'❌ NPU 0 access failed: {e}')
+    exit(1)
+" && echo -e "${GREEN}✅ NPU single-device verified${NC}"
 fi
 
 # Python环境验证
@@ -380,14 +443,15 @@ fi
 echo -e "${BLUE}📋 Final Summary:${NC}"
 echo "  - Device: $DEVICE_TYPE ($DEVICE_COUNT devices)"
 echo "  - Backend: $BACKEND"
+echo "  - Mode: $([ "$DEVICE_COUNT" -gt 1 ] && echo "MULTI-DEVICE" || echo "SINGLE-DEVICE")"
 echo "  - Distributed: $([ "$DEVICE_COUNT" -gt 1 ] && echo "YES" || echo "NO")"
 
-# 🔥 关键修复：启动服务
+# 🔥 修改：启动服务（支持单卡选项）
 if [ "$DEVICE_COUNT" -gt 1 ]; then
     echo -e "${GREEN}🚀 Starting $DEVICE_COUNT-device distributed service...${NC}"
     LOG_FILE="logs/${DEVICE_TYPE}_distributed_$(date +%Y%m%d_%H%M%S).log"
     
-    # 🔥 NPU使用standalone模式，GPU使用标准模式
+    # NPU使用standalone模式，GPU使用标准模式
     if [ "$DEVICE_TYPE" = "npu" ]; then
         torchrun \
             --standalone \
@@ -406,6 +470,9 @@ if [ "$DEVICE_COUNT" -gt 1 ]; then
 else
     echo -e "${GREEN}🚀 Starting single-device service...${NC}"
     LOG_FILE="logs/${DEVICE_TYPE}_single_$(date +%Y%m%d_%H%M%S).log"
+    
+    # 🔥 修改：单卡模式使用直接Python启动
+    echo -e "${BLUE}ℹ️  Using direct Python execution (no torchrun)${NC}"
     python3 src/i2v_api.py 2>&1 | tee "$LOG_FILE"
 fi
 
