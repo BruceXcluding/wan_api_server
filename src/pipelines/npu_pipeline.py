@@ -81,29 +81,24 @@ class NPUPipeline(BasePipeline):
         height, width = map(int, getattr(request, "image_size", "1280*720").split("*"))
         max_area = width * height
         
-        gen_args = {
-            "prompt": request.prompt,
-            "img": img,
-            "max_area": max_area,
-            "frame_num": getattr(request, "num_frames", 81),
-            "shift": getattr(request, "sample_shift", 5.0),
-            "sample_solver": getattr(request, "sample_solver", "unipc"),
-            "sampling_steps": getattr(request, "sample_steps", 40),
-            "guide_scale": getattr(request, "sample_guide_scale", 5.0),
-            "seed": getattr(request, "seed", 42),
-            "offload_model": getattr(request, "offload_model", False),
-            "negative_prompt": getattr(request, "negative_prompt", None),
-        }
-        
-        if progress_callback:
-            gen_args["progress_callback"] = progress_callback
-            
         # 只有rank 0输出详细日志
         if self.rank == 0:
-            logger.info(f"Generating video: {width}x{height}, {gen_args['frame_num']} frames")
+            logger.info(f"Generating video: {width}x{height}, {getattr(request, 'num_frames', 81)} frames")
             
-        # 分布式视频生成
-        video = self.model.generate(**gen_args)
+        # 🔥 最小化修改：按照generate.py的正确调用方式
+        video = self.model.generate(
+            request.prompt,                                    # 第一个位置参数
+            img,                                              # 第二个位置参数
+            max_area=max_area,                                # 后面都是关键字参数
+            frame_num=getattr(request, "num_frames", 81),
+            shift=getattr(request, "sample_shift", 5.0),
+            sample_solver=getattr(request, "sample_solver", "unipc"),
+            sampling_steps=getattr(request, "sample_steps", 40),
+            guide_scale=getattr(request, "sample_guide_scale", 5.0),
+            seed=getattr(request, "seed", 42),
+            offload_model=getattr(request, "offload_model", False),
+            negative_prompt=getattr(request, "negative_prompt", None),
+        )
         
         if self.rank == 0:
             logger.info(f"Distributed video generation completed")
