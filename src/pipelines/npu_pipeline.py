@@ -98,12 +98,12 @@ class NPUPipeline(BasePipeline):
             frame_num=getattr(request, "num_frames", 81),
             shift=getattr(request, "sample_shift", 5.0),
             sample_solver=getattr(request, "sample_solver", "unipc"),
-            sampling_steps=getattr(request, "sample_steps", 40),
-            guide_scale=getattr(request, "sample_guide_scale", 5.0),
-            seed=getattr(request, "seed", 42),
-            offload_model=getattr(request, "offload_model", False),
+            sampling_steps=getattr(request, "infer_steps", 40),
+            guide_scale=getattr(request, "guidance_scale", 5.0),
+            seed=getattr(request, "seed", 42) if getattr(request, "seed", None) is not None else 42,
+            offload_model=False,
         )
-        
+    
         if self.rank == 0:
             logger.info(f"Distributed video generation completed")
             

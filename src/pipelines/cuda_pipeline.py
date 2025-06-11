@@ -68,14 +68,13 @@ class CUDAPipeline(BasePipeline):
             frame_num=getattr(request, "num_frames", 81),
             shift=getattr(request, "sample_shift", 5.0),
             sample_solver=getattr(request, "sample_solver", "unipc"),
-            sampling_steps=getattr(request, "sample_steps", 40),
-            guide_scale=getattr(request, "sample_guide_scale", 5.0),
-            seed=getattr(request, "seed", 42),
+            sampling_steps=getattr(request, "infer_steps", 40),
+            guide_scale=getattr(request, "guidance_scale", 5.0),
+            seed=getattr(request, "seed", 42) if getattr(request, "seed", None) is not None else 42,
             offload_model=getattr(request, "offload_model", self.offload_model),
             # 进度回调
             progress_callback=progress_callback if progress_callback else None,
         )
-        return video
     
     def _save_video(self, video_tensor, output_path: str):
         logger.info(f"Saving video to {output_path}")
