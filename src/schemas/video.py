@@ -18,11 +18,11 @@ class TaskStatus(str, Enum):
 class VideoSubmitRequest(BaseModel):
     """视频生成提交请求"""
     prompt: str = Field(..., min_length=5, max_length=1000, description="生成提示词")
-    image_url: str = Field(..., description="输入图片URL")
+    image_path: str = Field(..., description="输入图片路径")
     image_size: Optional[str] = Field("1280*720", description="输出视频尺寸")
     num_frames: Optional[int] = Field(81, ge=24, le=121, description="视频帧数")
     guidance_scale: Optional[float] = Field(3.0, ge=1.0, le=10.0, description="引导强度")
-    infer_steps: Optional[int] = Field(30, ge=20, le=100, description="推理步数")
+    sample_steps: Optional[int] = Field(30, ge=20, le=100, description="推理步数")
     seed: Optional[int] = Field(None, description="随机种子")
     negative_prompt: Optional[str] = Field("", description="负面提示词")
     
@@ -73,6 +73,11 @@ class VideoStatusResponse(BaseModel):
     results: Optional[VideoResults] = Field(None, description="生成结果")
     reason: Optional[str] = Field(None, description="失败原因")
     elapsed_time: Optional[int] = Field(None, description="已用时间(秒)")
+    
+    # 🔥 详细进度信息
+    current_step: Optional[int] = Field(None, description="当前步骤")
+    total_steps: Optional[int] = Field(None, description="总步骤数")
+    current_stage: Optional[str] = Field(None, description="当前阶段")
 
 class VideoCancelRequest(BaseModel):
     """视频生成取消请求"""

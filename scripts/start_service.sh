@@ -140,11 +140,17 @@ fi
 if [ "$DEVICE_TYPE" = "npu" ]; then
     export NPU_VISIBLE_DEVICES="${NPU_VISIBLE_DEVICES:-$(seq -s, 0 $((DEVICE_COUNT-1)))}"
     
+    # 🔥 添加本地成功配置的关键环境变量
+    export ALGO="0"                                           # 🔥 关键：算法配置
+    export PYTORCH_NPU_ALLOC_CONF="expandable_segments:True"  # 🔥 关键：NPU内存配置
+    export CPU_AFFINITY_CONF="1"                              # 🔥 关键：CPU亲和性配置
+    export TOKENIZERS_PARALLELISM="false"
+    
     # 🔥 NPU分布式通信修复
-    export ASCEND_LAUNCH_BLOCKING="1"       # 调试模式，获取准确错误
+    export ASCEND_LAUNCH_BLOCKING="0"       # 调试模式，获取准确错误
     export HCCL_TIMEOUT="1800"              # 增加超时时间
     export HCCL_CONNECT_TIMEOUT="1800"      # 增加连接超时
-    export HCCL_EXEC_TIMEOUT="1800"         # 增加执行超时
+    export HCCL_EXEC_TIMEOUT="300"          # 增加执行超时
     export HCCL_HEARTBEAT_TIMEOUT="1800"    # 增加心跳超时
     
     # 🔥 禁用安全特性（单机多卡）
@@ -157,21 +163,30 @@ if [ "$DEVICE_TYPE" = "npu" ]; then
     export ASCEND_DEVICE_ID="0"             # 让每个进程自动设置
     
     # 🔥 性能优化
-    export TASK_QUEUE_ENABLE="1"
+    export TASK_QUEUE_ENABLE="2"
     export PTCOPY_ENABLE="1" 
     export COMBINED_ENABLE="1"
     export HCCL_BUFFSIZE="1024"
+
+    # 🔥 单机多卡模式标识
+    export HCCL_SINGLE_NODE="1"
+    export HCCL_LOCAL_RANK_NUM="$DEVICE_COUNT"
     
     # 🔥 日志控制
-    export ASCEND_GLOBAL_LOG_LEVEL="3"
+    export ASCEND_GLOBAL_LOG_LEVEL="1"
     export ASCEND_SLOG_PRINT_TO_STDOUT="0"
     export ASCEND_GLOBAL_EVENT_ENABLE="0"
+    export HCCL_DEBUG="0"
     
-    echo -e "${BLUE}📱 NPU Configuration:${NC}"
+    echo -e "${BLUE}📱 NPU Configuration (Enhanced):${NC}"
     echo "  - NPU Devices: $NPU_VISIBLE_DEVICES"
+    echo "  - ALGO: $ALGO"
+    echo "  - PYTORCH_NPU_ALLOC_CONF: $PYTORCH_NPU_ALLOC_CONF"
+    echo "  - TASK_QUEUE_ENABLE: $TASK_QUEUE_ENABLE"
+    echo "  - CPU_AFFINITY_CONF: $CPU_AFFINITY_CONF"
+    echo "  - TOKENIZERS_PARALLELISM: $TOKENIZERS_PARALLELISM"
     echo "  - HCCL Timeouts: ${HCCL_TIMEOUT}s"
-    echo "  - Security Disabled: $HCCL_WHITELIST_DISABLE"
-    echo "  - Launch Blocking: $ASCEND_LAUNCH_BLOCKING"
+    echo "  - Single Node Mode: $HCCL_SINGLE_NODE"
     
 elif [ "$DEVICE_TYPE" = "cuda" ]; then
     export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-$(seq -s, 0 $((DEVICE_COUNT-1)))}"

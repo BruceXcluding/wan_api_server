@@ -76,42 +76,49 @@ class NPUPipeline(BasePipeline):
         
         return model
 
-    def _generate_video_device_specific(self, request, img, progress_callback=None):
+    def _generate_video_device_specific(self, request, img, progress_callback=None):  # 🔥 添加参数
         """NPU设备特定的视频生成"""
         logger.info(f"Rank {self.rank}: Starting distributed video generation")
         
         # 解析请求参数
         height, width = map(int, getattr(request, "image_size", "1280*720").split("*"))
         max_area = width * height
-
+    
         # 🔥 记录负面提示词但不使用（因为WanI2V不支持）
         negative_prompt = getattr(request, "negative_prompt", "")
         if negative_prompt and self.rank == 0:
             logger.warning(f"negative_prompt '{negative_prompt}' ignored - WanI2V doesn't support this parameter") 
         
+        # 🔥 添加进度回调
+        if progress_callback:
+            progress_callback(15, "模型推理")
+        
         # 只有rank 0输出详细日志
         if self.rank == 0:
             logger.info(f"Generating video: {width}x{height}, {getattr(request, 'num_frames', 81)} frames")
             
-        # 🔥 修复：参照generate.py第311行的精确参数映射
         video = self.model.generate(
-            request.prompt,                                    # 第一个位置参数：prompt
-            img,                                              # 第二个位置参数：img
-            max_area=max_area,                                # 关键字参数
+            request.prompt,
+            img,
+            max_area=max_area,
             frame_num=getattr(request, "num_frames", 81),
-            shift=getattr(request, "sample_shift", 5.0),      # ✅ schema中有这个字段
-            sample_solver=getattr(request, "sample_solver", "unipc"),  # ✅ schema中有这个字段
-            sampling_steps=getattr(request, "infer_steps", 40),  # 🔥 修复：infer_steps -> sampling_steps
-            guide_scale=getattr(request, "guidance_scale", 5.0),  # 🔥 修复：guidance_scale -> guide_scale
-            seed=getattr(request, "seed", 42) if getattr(request, "seed", None) is not None else 42,  # 🔥 防止None
-            offload_model=False,  # 🔥 修复：分布式时固定为False
+            shift=getattr(request, "sample_shift", 5.0),
+            sample_solver=getattr(request, "sample_solver", "unipc"),
+            sampling_steps=getattr(request, "sample_steps", 40),  # 🔥 改为sample_steps
+            guide_scale=getattr(request, "guidance_scale", 5.0),
+            seed=getattr(request, "seed", 42) if getattr(request, "seed", None) is not None else 42,
+            offload_model=False,
         )
+    
+        # 🔥 添加进度回调
+        if progress_callback:
+            progress_callback(85, "推理完成")
     
         if self.rank == 0:
             logger.info(f"Distributed video generation completed")
             
         return video
-
+    
     def _save_video(self, video_tensor, output_path: str):
         """保存视频 - 只有rank 0保存"""
         if self.rank == 0:
@@ -155,34 +162,50 @@ class NPUPipeline(BasePipeline):
         if dist.is_initialized():
             dist.barrier()
 
-    def generate_video(self, request, task_id):
+    def generate_video(self, request, task_id, progress_callback=None):  # 🔥 添加progress_callback参数
         """生成视频的主入口"""
         try:
+            # 🔥 添加进度回调
+            if progress_callback:
+                progress_callback(5, "加载图片")
+
             # 处理图片输入
-            if hasattr(request, 'image_url') and request.image_url:
-                if request.image_url.startswith("http"):
+            if hasattr(request, 'image_path') and request.image_path:  # 🔥 改为image_path
+                if request.image_path.startswith("http"):  # 🔥 改为image_path
                     import requests
                     from io import BytesIO
-                    response = requests.get(request.image_url)
+                    response = requests.get(request.image_path)  # 🔥 改为image_path
                     img = Image.open(BytesIO(response.content))
                 else:
-                    img = Image.open(request.image_url)
+                    img = Image.open(request.image_path)  # 🔥 改为image_path
             else:
-                raise ValueError("image_url is required")
+                raise ValueError("image_path is required")  # 🔥 改为image_path
+
+            # 🔥 添加进度回调
+            if progress_callback:
+                progress_callback(10, "开始生成视频")
 
             # 生成视频
-            video_tensor = self._generate_video_device_specific(request, img)
-            
+            video_tensor = self._generate_video_device_specific(request, img, progress_callback)  # 🔥 传递回调
+
+            # 🔥 添加进度回调
+            if progress_callback:
+                progress_callback(90, "保存视频")
+
             # 保存视频
             output_path = f"generated_videos/{task_id}.mp4"
             os.makedirs("generated_videos", exist_ok=True)
             self._save_video(video_tensor, output_path)
-            
+
+            # 🔥 添加进度回调
+            if progress_callback:
+                progress_callback(100, "完成")
+
             # 记录内存使用
             self._log_memory_usage()
-            
+
             return f"/videos/{task_id}.mp4"
-            
+
         except Exception as e:
             logger.error(f"Rank {self.rank}: Video generation failed: {e}")
             raise
