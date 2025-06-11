@@ -9,20 +9,37 @@ from utils.device_detector import detect_device
 logger = logging.getLogger(__name__)
 
 def create_pipeline():
-    """创建分布式pipeline"""
+    """创建合适的pipeline"""
+    # 获取环境变量
+    ckpt_dir = os.environ.get("MODEL_CKPT_DIR", "/data/models/wan")
+    pipeline_type = os.environ.get("PIPELINE_TYPE", "auto")  # 🔥 新增：pipeline类型选择
     
-    # 🔥 修复：使用统一的设备检测函数
+    logger.info(f"Creating pipeline with ckpt_dir: {ckpt_dir}")
+    
+    # 🔥 如果指定使用diffuser
+    if pipeline_type == "diffuser":
+        logger.info("Using Diffuser pipeline (forced)")
+        from .diffuser_pipeline import DiffuserPipeline
+        return DiffuserPipeline(ckpt_dir)
+    
+    # 检测设备
     device_type, device_count, backend = detect_device()
+    logger.info(f"Detected: {device_type} with {device_count} devices, backend: {backend}")
     
-    # 获取分布式信息
+    # 🔥 修复：获取分布式参数
     rank = int(os.environ.get("RANK", 0))
     world_size = int(os.environ.get("WORLD_SIZE", 1))
     
-    # 获取模型路径
-    ckpt_dir = os.environ.get("MODEL_CKPT_DIR", "/path/to/your/ckpt")
-    
-    # 🔥 添加调试日志
-    logger.info(f"Rank {rank}: Creating {device_type} Pipeline")
+    # 🔥 自动选择pipeline
+    if pipeline_type == "auto":
+        # 单卡且有diffusers时优先使用diffuser（更高效）
+        if device_count == 1 and device_type in ["cuda", "npu"]:
+            try:
+                from .diffuser_pipeline import DiffuserPipeline
+                logger.info("Auto-selected: Diffuser pipeline (single device)")
+                return DiffuserPipeline(ckpt_dir)
+            except ImportError:
+                logger.info("Diffusers not available, falling back to native pipeline")
     
     if device_type == "npu":
         from .npu_pipeline import NPUPipeline

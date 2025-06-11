@@ -15,7 +15,11 @@ NC='\033[0m'
 
 # 🔥 新增：检查命令行参数
 FORCE_SINGLE_DEVICE=false
-if [[ "$1" == "--single" ]] || [[ "$1" == "-s" ]]; then
+if [[ "$1" == "--diffuser" ]] || [[ "$1" == "-d" ]]; then
+    export PIPELINE_TYPE="diffuser"
+    echo -e "${YELLOW}🎯 Force Diffuser pipeline mode${NC}"
+    FORCE_SINGLE_DEVICE=true  # diffuser目前只支持单卡
+elif [[ "$1" == "--single" ]] || [[ "$1" == "-s" ]]; then
     FORCE_SINGLE_DEVICE=true
     echo -e "${YELLOW}🎯 Force single-device mode enabled${NC}"
 fi

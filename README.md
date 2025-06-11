@@ -159,11 +159,13 @@ python3 tools/diagnostic.py --health
 ### 4. 启动服务
 
 ```bash
-# 智能启动 (自动检测设备)
-chmod +x scripts/start_service.sh
+# 1. 自动模式（单卡CUDA自动选diffuser）
 ./scripts/start_service.sh
 
-# 单卡模式启动 (强制使用单设备)
+# 2. 单卡高性能diffuser模式
+./scripts/start_service.sh --diffuser
+
+# 3. 单卡原生模式
 ./scripts/start_service.sh --single
 ```
 
