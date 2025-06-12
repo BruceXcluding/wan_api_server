@@ -104,8 +104,11 @@ git clone https://modelers.cn/MindIE/Wan2.1.git
 cd Wan2.1
 
 # 安装依赖
+## 方式1：自动安装（推荐）
+./scripts/install_deps.sh
+## 方式2: 手动安装
 pip install -r requirements.txt
-pip install -e .
+pip install -r requirements_npu.txt
 
 # 验证安装
 python -c "import wan; print('✅ Wan2.1 NPU version installed')"
@@ -118,8 +121,11 @@ git clone https://github.com/Wan-Video/Wan2.1.git
 cd Wan2.1
 
 # 安装依赖
+## 方式1：自动安装（推荐）
+./scripts/install_deps.sh
+## 方式2: 手动安装
 pip install -r requirements.txt
-pip install -e .
+pip install -r requirements_cuda.txt
 
 # 验证安装
 python -c "import wan; print('✅ Wan2.1 GPU version installed')"

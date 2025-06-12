@@ -214,7 +214,6 @@ def process_tasks():
     while task_queue:
         task_id, request = task_queue.pop(0)
         
-        # 检查是否被取消
         if task_id in cancelled_tasks:
             logger.info(f"Task {task_id} was cancelled, skipping")
             continue
@@ -223,22 +222,40 @@ def process_tasks():
             logger.info(f"🚀 Processing task: {task_id}")
             status_dict[task_id]["status"] = TaskStatus.RUNNING
             status_dict[task_id]["updated_at"] = datetime.now().isoformat()
-            status_dict[task_id]["start_time"] = datetime.now()  # 🔥 新增：记录开始时间
+            status_dict[task_id]["start_time"] = datetime.now()
             
-            # 🔥 修改：增强的进度回调
+            # 🔥 关键修复：广播任务给所有rank
+            world_size = int(os.environ.get("WORLD_SIZE", 1))
+            if world_size > 1:
+                import torch.distributed as dist
+                if dist.is_initialized():
+                    task_data = [{'request': request, 'task_id': task_id}]
+                    dist.broadcast_object_list(task_data, src=0)
+                    logger.info(f"Task {task_id} broadcasted to all {world_size} ranks")
+            
             def progress_callback(progress, stage="Processing"):
                 if task_id in cancelled_tasks:
                     raise Exception("Task was cancelled")
                 status_dict[task_id]["progress"] = progress
-                status_dict[task_id]["current_stage"] = stage  # 🔥 新增：当前阶段
+                status_dict[task_id]["current_stage"] = stage
                 
-                # 🔥 新增：详细日志
                 elapsed = datetime.now() - status_dict[task_id]["start_time"]
                 logger.info(f"📊 Task {task_id}: {stage} ({progress:.1f}%) - Elapsed: {elapsed}")
                 return progress
             
+            # 🔥 现在所有rank都会参与这个调用
             result = pipeline.generate_video(request, task_id, progress_callback=progress_callback)
             
+            # 🔥 添加：任务完成后等待所有rank同步
+            if world_size > 1:
+                import torch.distributed as dist
+                if dist.is_initialized():
+                    try:
+                        dist.barrier(timeout=timedelta(seconds=30))
+                        logger.info(f"Task {task_id}: All ranks synchronized after completion")
+                    except Exception as e:
+                        logger.warning(f"Task {task_id}: Post-completion barrier failed: {e}")
+             
             # 最后检查一次是否被取消
             if task_id in cancelled_tasks:
                 logger.info(f"Task {task_id} was cancelled during processing")
@@ -269,34 +286,111 @@ def process_tasks():
 
 def main():
     global pipeline
+    rank, local_rank, world_size = init_distributed()  # 🔥 修复：调用init_distributed
     
-    # 初始化分布式
-    rank, local_rank, world_size = init_distributed()
+    logger.info(f"Rank {rank}: Starting I2V API service (world_size={world_size})")
     
-    # 创建pipeline
+    # 🔥 所有rank都创建pipeline（对齐本地generate.py）
     pipeline = create_pipeline()
     logger.info(f"Rank {rank}: Pipeline created successfully")
     
-    # 只有rank 0运行API服务器
     if rank == 0:
+        # 🔥 修复：创建app对象
         app = create_app()
         
-        # 启动后台任务处理线程
-        def task_worker():
-            while True:
-                process_tasks()
-                time.sleep(0.1)
+        # rank 0运行FastAPI服务 + 工作循环
+        logger.info("Rank 0: Starting FastAPI server...")
+        import threading
         
-        threading.Thread(target=task_worker, daemon=True).start()
+        # 🔥 在后台线程启动任务处理循环
+        task_thread = threading.Thread(target=task_processing_loop, daemon=True)
+        task_thread.start()
         
-        # 启动API服务器
-        logger.info("Starting API server on rank 0...")
-        uvicorn.run(app, host="0.0.0.0", port=8088)
+        # 🔥 在后台线程启动工作循环
+        worker_thread = threading.Thread(target=distributed_worker_loop, daemon=True)
+        worker_thread.start()
+        
+        uvicorn.run(app, host="0.0.0.0", port=8088, log_level="info")
     else:
-        # 其他rank等待并参与分布式计算
-        logger.info(f"Rank {rank}: Waiting for distributed tasks...")
-        while True:
+        # 🔥 其他rank运行工作循环
+        logger.info(f"Rank {rank}: Starting distributed worker...")
+        distributed_worker_loop()
+
+def task_processing_loop():
+    """任务处理循环（只在rank 0运行）"""
+    logger.info("Task processing loop started")
+    while True:
+        try:
+            process_tasks()  # 处理任务队列
+            time.sleep(0.1)  # 防止CPU占用过高
+        except KeyboardInterrupt:
+            logger.info("Task processing loop interrupted")
+            break
+        except Exception as e:
+            logger.error(f"Task processing error: {e}")
             time.sleep(1)
+
+def distributed_worker_loop():
+    """分布式工作循环 - 所有rank都参与"""
+    rank = int(os.environ.get("RANK", 0))
+    
+    logger.info(f"Rank {rank}: Worker ready for distributed tasks")
+    
+    if rank == 0:
+        logger.info("Rank 0: Main worker loop handled by task processing")
+        return
+    else:
+        logger.info(f"Rank {rank}: Waiting for distributed tasks...")
+        
+        import torch.distributed as dist
+        while True:
+            try:
+                if dist.is_initialized():
+                    # 🔥 关键：等待rank 0的任务广播
+                    task_data = [None]
+                    dist.broadcast_object_list(task_data, src=0)
+                    
+                    if task_data[0] is not None:
+                        if task_data[0] == "SHUTDOWN":  # 🔥 添加：关闭信号
+                            logger.info(f"Rank {rank}: Received shutdown signal")
+                            break
+                            
+                        request, task_id = task_data[0]['request'], task_data[0]['task_id']
+                        logger.info(f"Rank {rank}: Received task {task_id}")
+                        
+                        try:
+                            # 🔥 关键：其他rank也调用generate_video
+                            pipeline.generate_video(request, task_id)
+                            logger.info(f"Rank {rank}: Task {task_id} completed successfully")
+                            
+                        except Exception as e:
+                            logger.error(f"Rank {rank}: Task {task_id} failed: {e}")
+                            
+                        # 🔥 添加：任务完成后的同步
+                        try:
+                            dist.barrier(timeout=timedelta(seconds=30))
+                            logger.info(f"Rank {rank}: Post-task barrier completed")
+                        except Exception as e:
+                            logger.warning(f"Rank {rank}: Post-task barrier failed: {e}")
+                            
+                else:
+                    time.sleep(0.1)
+                    
+            except KeyboardInterrupt:
+                logger.info(f"Rank {rank}: Received interrupt")
+                break
+            except Exception as e:
+                logger.error(f"Rank {rank}: Worker error: {e}")
+                time.sleep(0.1)
+                
+        # 🔥 添加：退出时的清理
+        logger.info(f"Rank {rank}: Worker loop exiting, cleaning up...")
+        try:
+            if dist.is_initialized():
+                dist.barrier(timeout=timedelta(seconds=10))
+                logger.info(f"Rank {rank}: Final cleanup barrier completed")
+        except Exception as e:
+            logger.warning(f"Rank {rank}: Final cleanup failed: {e}")
 
 if __name__ == "__main__":
     main()

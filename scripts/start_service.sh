@@ -111,11 +111,11 @@ else
         fi
     done
     
-    # 如果都没找到，使用默认路径
+    # 🔥 如果都没找到，报错退出而不是使用默认路径
     if [ -z "$MODEL_CKPT_DIR" ]; then
-        export MODEL_CKPT_DIR="/data/models/modelscope/hub/Wan-AI/Wan2.1-I2V-14B-720P"
-        echo -e "${YELLOW}⚠️  No model found, using default path: $MODEL_CKPT_DIR${NC}"
-        echo -e "${YELLOW}   Model will be downloaded on first use${NC}"
+        echo -e "${RED}❌ No model found in standard locations!${NC}"
+        echo -e "${YELLOW}Please specify model path using: --model-path /your/path/to/model${NC}"
+        exit 1
     fi
 fi
 

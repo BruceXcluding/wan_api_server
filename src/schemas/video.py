@@ -26,10 +26,6 @@ class VideoSubmitRequest(BaseModel):
     seed: Optional[int] = Field(None, description="随机种子")
     negative_prompt: Optional[str] = Field("", description="负面提示词")
     
-    # 采样参数
-    sample_solver: Optional[str] = Field("unipc", description="采样求解器")
-    sample_shift: Optional[float] = Field(5.0, description="采样偏移")
-
     # 分布式参数
     vae_parallel: Optional[bool] = Field(False, description="VAE并行")
     ulysses_size: Optional[int] = Field(1, description="Ulysses并行大小")

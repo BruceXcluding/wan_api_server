@@ -24,6 +24,13 @@ class BasePipeline(abc.ABC):
         self.local_rank = int(os.environ.get("LOCAL_RANK", 0))
         self.t5_cpu = model_args.get('t5_cpu', False)
         logger.info(f"Initializing {self.__class__.__name__} on rank {self.rank}")
+
+        self.ulysses_size = model_args.get('ulysses_size', self.world_size)  # 默认等于world_size
+        self.ring_size = model_args.get('ring_size', 1)                      # 默认不使用ring并行
+        self.cfg_size = model_args.get('cfg_size', 1)                       # 默认不使用cfg并行
+    
+        logger.info(f"Initializing {self.__class__.__name__} on rank {self.rank}")
+        logger.info(f"Rank {self.rank}: Distributed config - ulysses_size={self.ulysses_size}, ring_size={self.ring_size}")
         
         # 🔥 关键修改：自动初始化分布式和模型
         self.initialize()
@@ -33,9 +40,16 @@ class BasePipeline(abc.ABC):
         # 🔥 修改：只在多卡时初始化分布式
         if self.world_size > 1:
             self._init_distributed()
+            # 🔥 新增：设备特定的分布式初始化（默认为空）
+            self._setup_device_distributed()
         self.model = self._load_model()
         logger.info(f"Rank {self.rank}: {self.device_type} Pipeline initialized successfully")
-
+    
+    def _setup_device_distributed(self):
+        """设备特定的分布式初始化（子类可选重写）"""
+        # 🔥 默认为空实现，不影响NPU等现有逻辑
+        pass
+    
     def _init_distributed(self):
         """分布式环境初始化"""
         if not dist.is_initialized():
@@ -47,8 +61,11 @@ class BasePipeline(abc.ABC):
     def sync(self):
         """分布式同步屏障"""
         if self.world_size > 1 and dist.is_initialized():
-            dist.barrier()
-
+            try:
+                dist.barrier(timeout=timedelta(seconds=30))  # 🔥 添加超时
+            except Exception as e:
+                logger.warning(f"Rank {self.rank}: Sync barrier failed: {e}")
+    
     def generate_video(self, request, task_id: str, progress_callback: Optional[Callable] = None) -> str:
         """生成视频主流程"""
         logger.info(f"Rank {self.rank}: Start video generation for task {task_id}")
@@ -56,7 +73,8 @@ class BasePipeline(abc.ABC):
             # 下载图片（只在rank=0）
             image_path = None
             if self.rank == 0:
-                image_path = self._download_image_sync(request.image_url, task_id)
+                image_url = getattr(request, 'image_path', getattr(request, 'image_url', None))
+                image_path = self._download_image_sync(image_url, task_id)
             # 广播图片路径
             image_path = self._broadcast_image_path(image_path)
             # 同步
@@ -93,8 +111,15 @@ class BasePipeline(abc.ABC):
         """用分布式广播同步图片路径"""
         if self.world_size <= 1:
             return image_path
+
+        import torch.distributed as dist
+        if not dist.is_initialized():
+            return image_path
+
+        # 🔥 真正的分布式广播
         obj_list = [image_path]
         dist.broadcast_object_list(obj_list, src=0)
+        logger.info(f"Rank {self.rank}: Image path broadcast completed")
         return obj_list[0]
 
     def _download_image_sync(self, image_url: str, task_id: str) -> str:
@@ -117,15 +142,26 @@ class BasePipeline(abc.ABC):
     def _generate_video_common(self, request, image_path: str, output_path: str, progress_callback: Optional[Callable] = None) -> str:
         """模板方法：调用设备特定生成逻辑并保存视频"""
         self._log_memory_usage()
+        
+        # 🔥 所有rank都加载图片
         img = Image.open(image_path).convert("RGB")
+        
+        # 🔥 关键：所有rank都参与计算
         video_tensor = self._generate_video_device_specific(request, img, progress_callback)
+        
+        # 🔥 只有rank 0保存视频
         if self.rank == 0 and video_tensor is not None:
             self._save_video(video_tensor, output_path)
             logger.info(f"Video saved to {output_path}")
-        self.sync()
-        # 🔥 修复：返回API访问路径而不是文件系统路径
+        
+        # 🔥 分布式同步
+        if self.world_size > 1:
+            import torch.distributed as dist
+            if dist.is_initialized():
+                dist.barrier()
+        
         return f"/videos/{os.path.basename(output_path)}"
-    
+        
     @abc.abstractmethod
     def _get_backend(self) -> str:
         """返回分布式后端，如'nccl'或'gloo'"""

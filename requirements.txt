@@ -5,12 +5,13 @@ pydantic>=2.5.0,<3.0.0
 aiohttp>=3.9.0
 requests>=2.31.0
 
-# 基础深度学习 (API服务需要)
-torch>=2.0.0
-torch_npu
+# 基础依赖
 numpy>=1.24.0
 Pillow>=10.0.0
 
-# AI模型库 (API服务需要的最低版本)
+# AI模型库
 transformers>=4.30.0
 diffusers>=0.20.0
+
+# 🔥 注意：torch相关依赖已移除，根据设备自动安装
+# 使用 ./scripts/install_deps.sh 自动检测并安装对应版本

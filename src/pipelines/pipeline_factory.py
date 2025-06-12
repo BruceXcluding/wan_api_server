@@ -54,6 +54,7 @@ def create_pipeline():
         
     elif device_type == "cuda":
         from .cuda_pipeline import CUDAPipeline
+        
         pipeline = CUDAPipeline(
             ckpt_dir=ckpt_dir, 
             rank=rank, 
@@ -61,7 +62,7 @@ def create_pipeline():
         )
         logger.info(f"Rank {rank}: CUDA Pipeline created successfully")
         return pipeline
-        
+            
     else:
         from .cpu_pipeline import CPUPipeline
         pipeline = CPUPipeline(ckpt_dir=ckpt_dir)

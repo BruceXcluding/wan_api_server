@@ -36,144 +36,234 @@ class CUDAPipeline(BasePipeline):
     def _get_backend(self) -> str:
         return "nccl"
 
+    def _setup_device_distributed(self):
+        """CUDA设备特定的分布式初始化"""
+        if self.world_size > 1:
+            logger.info(f"Rank {self.rank}: Setting up xfuser distributed environment...")
+
+            try:
+                # 🔥 对齐本地generate.py的xfuser初始化
+                from xfuser.core.distributed import (
+                    init_distributed_environment,
+                    initialize_model_parallel,
+                )
+
+                # 先初始化分布式环境
+                init_distributed_environment(
+                    rank=self.rank, 
+                    world_size=self.world_size
+                )
+
+                # 再初始化模型并行组
+                initialize_model_parallel(
+                    sequence_parallel_degree=self.world_size,
+                    ring_degree=self.ring_size,
+                    ulysses_degree=self.ulysses_size,
+                )
+
+                logger.info(f"Rank {self.rank}: xfuser model parallel initialized")
+
+            except Exception as e:
+                logger.error(f"Rank {self.rank}: xfuser setup failed: {e}")
+                raise RuntimeError(f"Cannot initialize xfuser: {e}")
+
     def _load_model(self):
         torch.cuda.set_device(self.local_rank)
+        print(f"[GPU {self.local_rank}] Rank {self.rank}: Loading WanI2V...")  # 🔥 添加强制输出
         logger.info(f"Rank {self.rank}: Loading WanI2V on CUDA:{self.local_rank} (t5_cpu={self.t5_cpu})")
+
         cfg = WAN_CONFIGS.get("i2v-14B")
-        
-        # 🔥 根据world_size调整模型配置
+
         model_config = {
             "config": cfg,
             "checkpoint_dir": self.ckpt_dir,
             "device_id": self.local_rank,
             "t5_cpu": self.t5_cpu,
         }
-        
-        # 🔥 只在多卡模式下添加分布式参数
+
+        # 多卡模式配置
         if self.world_size > 1:
             model_config.update({
                 "rank": self.rank,
                 "t5_fsdp": self.t5_fsdp,
                 "dit_fsdp": self.dit_fsdp,
                 "use_usp": (self.ulysses_size > 1 or self.ring_size > 1),
-                "use_vae_parallel": self.vae_parallel,
             })
-            logger.info(f"Rank {self.rank}: Multi-GPU mode with distributed config")
-        else:
-            logger.info(f"Rank {self.rank}: Single-GPU mode")
-        
+            print(f"[GPU {self.local_rank}] Rank {self.rank}: Multi-GPU config enabled")  # 🔥 添加
+            logger.info(f"Rank {self.rank}: Multi-GPU config enabled")
+
         model = wan.WanI2V(**model_config)
+        print(f"[GPU {self.local_rank}] Rank {self.rank}: WanI2V loaded!")  # 🔥 添加
+        logger.info(f"Rank {self.rank}: WanI2V loaded successfully")
+
         return model
 
-    # 🔥 新增：添加generate_video方法以支持进度回调
-    def generate_video(self, request, task_id, progress_callback=None):
-        """生成视频的主入口"""
-        try:
-            # 🔥 添加进度回调
-            if progress_callback:
-                progress_callback(5, "加载图片")
-                
-            # 处理图片输入
-            if hasattr(request, 'image_path') and request.image_path:  # 🔥 改为image_path
-                if request.image_path.startswith("http"):
-                    import requests
-                    from io import BytesIO
-                    response = requests.get(request.image_path)
-                    img = Image.open(BytesIO(response.content))
-                else:
-                    img = Image.open(request.image_path)
-            else:
-                raise ValueError("image_path is required")
-
-            # 🔥 添加进度回调
-            if progress_callback:
-                progress_callback(10, "开始生成视频")
-
-            # 生成视频
-            video_tensor = self._generate_video_device_specific(request, img, progress_callback)
-            
-            # 🔥 添加进度回调
-            if progress_callback:
-                progress_callback(90, "保存视频")
-            
-            # 保存视频
-            output_path = f"generated_videos/{task_id}.mp4"
-            os.makedirs("generated_videos", exist_ok=True)
-            self._save_video(video_tensor, output_path)
-            
-            # 🔥 添加进度回调
-            if progress_callback:
-                progress_callback(100, "完成")
-            
-            # 记录内存使用
-            self._log_memory_usage()
-            
-            return f"/videos/{task_id}.mp4"
-            
-        except Exception as e:
-            logger.error(f"Rank {self.rank}: Video generation failed: {e}")
-            raise
-
     def _generate_video_device_specific(self, request, img, progress_callback=None):
-        logger.info(f"Rank {self.rank}: Generating video on CUDA with WanI2V")
-        
-        # 🔥 解析图片尺寸
-        height, width = map(int, getattr(request, "image_size", "1280*720").split("*"))
+        """设备特定的视频生成 - 确保分布式计算"""
+        print(f"[GPU {self.local_rank}] Rank {self.rank}: STARTING VIDEO GENERATION")
+        logger.info(f"Rank {self.rank}: Generating video on CUDA:{self.local_rank}")
+    
+        # 🔥 分布式同步点和参数广播
+        if self.world_size > 1:
+            import torch.distributed as dist
+            if dist.is_initialized():
+                print(f"[GPU {self.local_rank}] Rank {self.rank}: Broadcasting parameters...")
+    
+                if self.rank == 0:
+                    # 🔥 添加参数验证和修正
+                    num_frames = getattr(request, "num_frames", 81)
+                    image_size = getattr(request, "image_size", "1280*720")
+                    
+                    # 🔥 确保帧数是模型支持的
+                    if num_frames not in [41, 81, 121]:
+                        logger.warning(f"num_frames {num_frames} not in supported range, using 81")
+                        num_frames = 81
+                    
+                    # 🔥 确保尺寸合理
+                    if '*' in image_size:
+                        h_str, w_str = image_size.split('*')
+                    elif 'x' in image_size:
+                        w_str, h_str = image_size.split('x')
+                    else:
+                        h_str, w_str = "720", "1280"
+                    
+                    height, width = int(h_str), int(w_str)
+                    
+                    # 🔥 确保尺寸是32的倍数（模型要求）
+                    height = (height // 32) * 32
+                    width = (width // 32) * 32
+                    image_size = f"{height}*{width}"
+                    
+                    logger.info(f"Rank {self.rank}: Validated params - frames: {num_frames}, size: {image_size}")
+                    
+                    params = {
+                        'prompt': request.prompt,
+                        'image_size': image_size,  # 🔥 使用验证后的尺寸
+                        'num_frames': num_frames,  # 🔥 使用验证后的帧数
+                        'sample_shift': getattr(request, "sample_shift", 5.0),
+                        'sample_solver': getattr(request, "sample_solver", "unipc"),
+                        'sample_steps': getattr(request, "sample_steps", 40),
+                        'guidance_scale': getattr(request, "guidance_scale", 5.0),
+                        'seed': getattr(request, "seed", 42) if getattr(request, "seed", None) is not None else 42,
+                        'offload_model': getattr(request, "offload_model", self.offload_model),
+                    }
+                    params_list = [params]
+                else:
+                    params_list = [None]
+    
+                # 广播参数
+                dist.broadcast_object_list(params_list, src=0)
+                params = params_list[0]
+    
+                print(f"[GPU {self.local_rank}] Rank {self.rank}: Parameters received")
+                dist.barrier()
+                print(f"[GPU {self.local_rank}] Rank {self.rank}: All ranks synchronized")
+    
+                # 使用广播的参数
+                prompt = params['prompt']
+                image_size = params['image_size']
+                num_frames = params['num_frames']
+                sample_shift = params['sample_shift']
+                sample_solver = params['sample_solver']
+                sample_steps = params['sample_steps']
+                guidance_scale = params['guidance_scale']
+                seed = params['seed']
+                offload_model = params['offload_model']
+            else:
+                # 单卡模式 - 也需要参数验证
+                num_frames = getattr(request, "num_frames", 81)
+                if num_frames not in [16, 24, 32, 41, 81, 121]:
+                    num_frames = 81 
+                prompt = request.prompt
+                image_size = getattr(request, "image_size", "1280*720") 
+                sample_shift = getattr(request, "sample_shift", 5.0)
+                sample_solver = getattr(request, "sample_solver", "unipc")
+                sample_steps = getattr(request, "sample_steps", 40)
+                guidance_scale = getattr(request, "guidance_scale", 5.0)
+                seed = getattr(request, "seed", 42) if getattr(request, "seed", None) is not None else 42
+                offload_model = getattr(request, "offload_model", self.offload_model)  # 🔥 添加这个
+        else:
+            # 单卡模式
+            prompt = request.prompt
+            image_size = getattr(request, "image_size", "1280*720")
+            num_frames = getattr(request, "num_frames", 81)
+            sample_shift = getattr(request, "sample_shift", 5.0)
+            sample_solver = getattr(request, "sample_solver", "unipc")
+            sample_steps = getattr(request, "sample_steps", 40)
+            guidance_scale = getattr(request, "guidance_scale", 5.0)
+            seed = getattr(request, "seed", 42) if getattr(request, "seed", None) is not None else 42
+            offload_model = getattr(request, "offload_model", self.offload_model)  # 🔥 添加这个
+
+        # 确保图片在正确设备上
+        if hasattr(img, 'to'):
+            img = img.to(f'cuda:{self.local_rank}')
+
+        # 解析尺寸
+        if '*' in image_size:
+            height_str, width_str = image_size.split('*')
+        elif 'x' in image_size:
+            width_str, height_str = image_size.split('x')
+        else:
+            height_str, width_str = "720", "1280"
+
+        height, width = int(height_str), int(width_str)
         max_area = width * height
-        
-        # 记录负面提示词但不使用
-        negative_prompt = getattr(request, "negative_prompt", "")
-        if negative_prompt and self.rank == 0:
-            logger.warning(f"negative_prompt '{negative_prompt}' ignored - WanI2V doesn't support this parameter") 
 
-        # 🔥 添加进度回调
-        if progress_callback:
+        if progress_callback and self.rank == 0:
             progress_callback(15, "模型推理")
-        
-        # 只有rank 0输出详细日志
-        if self.rank == 0:
-            logger.info(f"Generating video: {width}x{height}, {getattr(request, 'num_frames', 81)} frames")
 
-        # 🔥 修复：使用正确的参数映射
+        # 每个rank都调用model.generate
+        print(f"[GPU {self.local_rank}] Rank {self.rank}: Calling model.generate()...")
+        logger.info(f"Rank {self.rank}: Starting generation - {width}x{height}, {num_frames} frames")
+
+        # 🔥 使用广播的参数（关键修复）
         video = self.model.generate(
-            request.prompt,
+            prompt,
             img,
-            max_area=max_area,  # 🔥 修复：直接计算max_area
-            frame_num=getattr(request, "num_frames", 81),
-            shift=getattr(request, "sample_shift", 5.0),
-            sample_solver=getattr(request, "sample_solver", "unipc"),
-            sampling_steps=getattr(request, "sample_steps", 40),  # 🔥 修复：sample_steps
-            guide_scale=getattr(request, "guidance_scale", 5.0),
-            seed=getattr(request, "seed", 42) if getattr(request, "seed", None) is not None else 42,
-            offload_model=getattr(request, "offload_model", self.offload_model),
+            max_area=max_area,
+            frame_num=num_frames,
+            shift=sample_shift,
+            sample_solver=sample_solver,
+            sampling_steps=sample_steps,
+            guide_scale=guidance_scale,
+            seed=seed,
+            offload_model=offload_model,  # 🔥 使用广播的参数
         )
 
-        # 🔥 添加进度回调
-        if progress_callback:
-            progress_callback(85, "推理完成")
+        print(f"[GPU {self.local_rank}] Rank {self.rank}: Generation COMPLETED!")
+        logger.info(f"Rank {self.rank}: Generation completed on CUDA:{self.local_rank}")
 
-        if self.rank == 0:
-            logger.info(f"Distributed video generation completed")
-            
+        # 分布式同步
+        if self.world_size > 1:
+            import torch.distributed as dist
+            if dist.is_initialized():
+                dist.barrier()
+                logger.info(f"Rank {self.rank}: Final sync completed")
+
         return video
-    
+
     def _save_video(self, video_tensor, output_path: str):
-        logger.info(f"Saving video to {output_path}")
-        try:
-            from wan.utils.utils import cache_video
-            cache_video(
-                tensor=video_tensor[None] if video_tensor.ndim == 4 else video_tensor,
-                save_file=output_path,
-                fps=video_tensor.shape[0] // 5,
-                nrow=1,
-                normalize=True,
-                value_range=(-1, 1)
-            )
-        except Exception as e:
-            logger.error(f"Failed to save video: {e}")
-            # 🔥 创建一个占位符文件
-            with open(output_path, "wb") as f:
-                f.write(b"FAKE_VIDEO_DATA")
+        """保存视频 - 只有rank 0执行"""
+        if self.rank == 0:
+            logger.info(f"Saving video to {output_path}")
+            try:
+                from wan.utils.utils import cache_video
+                # 🔥 参考generate.py的保存逻辑
+                cache_video(
+                    tensor=video_tensor[None] if video_tensor.ndim == 4 else video_tensor,
+                    save_file=output_path,
+                    fps=16,  # 🔥 使用固定fps
+                    nrow=1,
+                    normalize=True,
+                    value_range=(-1, 1)
+                )
+                logger.info(f"Video saved successfully: {output_path}")
+            except Exception as e:
+                logger.error(f"Failed to save video: {e}")
+                # 创建占位符文件
+                with open(output_path, "wb") as f:
+                    f.write(b"VIDEO_SAVE_FAILED")
+                raise
 
     def _log_memory_usage(self):
         try:
@@ -181,7 +271,7 @@ class CUDAPipeline(BasePipeline):
             memory_reserved = torch.cuda.memory_reserved(self.local_rank) / 1024**3
             logger.info(f"Rank {self.rank} CUDA Memory - Allocated: {memory_allocated:.2f}GB, Reserved: {memory_reserved:.2f}GB")
         except Exception as e:
-            logger.warning(f"Failed to get CUDA memory info: {e}")
+            logger.warning(f"Rank {self.rank}: Failed to get CUDA memory info: {e}")
 
     def _empty_cache(self):
         torch.cuda.empty_cache()

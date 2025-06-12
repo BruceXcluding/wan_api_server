@@ -1,0 +1,5 @@
+# NPU专用依赖
+torch>=2.0.0
+torch_npu
+torchvision
+torchaudio
