@@ -110,14 +110,12 @@ class CUDAPipeline(BasePipeline):
                 print(f"[GPU {self.local_rank}] Rank {self.rank}: Broadcasting parameters...")
     
                 if self.rank == 0:
-                    # 🔥 添加参数验证和修正
                     num_frames = getattr(request, "num_frames", 81)
-                    image_size = getattr(request, "image_size", "1280*720")
-                    
-                    # 🔥 确保帧数是模型支持的
-                    if num_frames not in [41, 81, 121]:
-                        logger.warning(f"num_frames {num_frames} not in supported range, using 81")
+                    if num_frames != 81:
+                        logger.warning(f"num_frames {num_frames} not supported, using 81")
                         num_frames = 81
+                
+                    image_size = getattr(request, "image_size", "1280*720")
                     
                     # 🔥 确保尺寸合理
                     if '*' in image_size:
@@ -171,11 +169,9 @@ class CUDAPipeline(BasePipeline):
                 offload_model = params['offload_model']
             else:
                 # 单卡模式 - 也需要参数验证
-                num_frames = getattr(request, "num_frames", 81)
-                if num_frames not in [16, 24, 32, 41, 81, 121]:
-                    num_frames = 81 
                 prompt = request.prompt
-                image_size = getattr(request, "image_size", "1280*720") 
+                image_size = getattr(request, "image_size", "1280*720")
+                num_frames = 81 
                 sample_shift = getattr(request, "sample_shift", 5.0)
                 sample_solver = getattr(request, "sample_solver", "unipc")
                 sample_steps = getattr(request, "sample_steps", 40)
@@ -186,7 +182,7 @@ class CUDAPipeline(BasePipeline):
             # 单卡模式
             prompt = request.prompt
             image_size = getattr(request, "image_size", "1280*720")
-            num_frames = getattr(request, "num_frames", 81)
+            num_frames = 81
             sample_shift = getattr(request, "sample_shift", 5.0)
             sample_solver = getattr(request, "sample_solver", "unipc")
             sample_steps = getattr(request, "sample_steps", 40)
