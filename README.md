@@ -267,6 +267,7 @@ python3 tests/benchmark.py --save results.json
 #### T5 CPU 模式 (节省显存)
 ```bash
 export T5_CPU=true
+export T5_FSDP=false
 export MAX_CONCURRENT_TASKS=2
 export DIT_FSDP=true
 export VAE_PARALLEL=false
@@ -283,10 +284,19 @@ export USE_ATTENTION_CACHE=true
 
 #### NPU 专用环境变量
 ```bash
+910B3:
 export ASCEND_LAUNCH_BLOCKING=0
 export HCCL_TIMEOUT=2400
 export HCCL_BUFFSIZE=512
 export PYTORCH_NPU_ALLOC_CONF="expandable_segments:True"
+
+910B4:
+export ASCEND_LAUNCH_BLOCKING=0
+export HCCL_TIMEOUT=3600
+export HCCL_BUFFSIZE=256
+export TASK_QUEUE_ENABLE="0"
+export PYTORCH_NPU_ALLOC_CONF="expandable_segments:True"
+
 ```
 
 ## 📚 API 接口
