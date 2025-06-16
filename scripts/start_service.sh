@@ -122,7 +122,7 @@ fi
 # 默认配置
 export T5_CPU="${T5_CPU:-true}"
 export DIT_FSDP="${DIT_FSDP:-true}"
-export T5_FSDP="${T5_FSDP:-false}"
+export T5_FSDP="${T5_FSDP:-true}"
 export VAE_PARALLEL="${VAE_PARALLEL:-true}"
 export CFG_SIZE="${CFG_SIZE:-1}"
 export ULYSSES_SIZE="${ULYSSES_SIZE:-1}"
@@ -305,6 +305,9 @@ if [ "$DEVICE_TYPE" = "npu" ]; then
     export HCCL_CONNECT_TIMEOUT="1800"      # 增加连接超时
     export HCCL_EXEC_TIMEOUT="300"          # 增加执行超时
     export HCCL_HEARTBEAT_TIMEOUT="1800"    # 增加心跳超时
+
+    # 🔥 ACL流超时设置
+    export ACL_STREAM_TIMEOUT="3600"  
     
     # 🔥 禁用安全特性（单机多卡）
     export HCCL_WHITELIST_DISABLE="1"
