@@ -51,11 +51,11 @@ wan-api-server/
 │   │   ├── cuda_pipeline.py          # CUDA 管道实现
 │   │   ├── cpu_pipeline.py           # CPU 管道实现
 │   │   └── pipeline_factory.py       # 管道工厂
-│   └── utils/                        # 🛠️ 内部工具类
-│       └── __init__.py
 ├── utils/                            # 🛠️ 项目级工具
 │   ├── __init__.py
 │   └── device_detector.py            # 设备自动检测
+│   └── dynamic_scheduler.py          # 动态GPU调度器
+│   └── load_monitor.py               # 负载监控
 ├── scripts/                          # 📜 启动脚本
 │   └── start_service.sh              # 智能启动脚本
 ├── tests/                            # ✅ 测试工具
@@ -168,6 +168,9 @@ python3 tools/diagnostic.py --health
 ### 4. 启动服务
 
 ```bash
+# 确保启用动态调度
+export ENABLE_DYNAMIC_SCHEDULING=true
+
 # 基础启动（自动检测模型路径）
 ./scripts/start_service.sh
 
@@ -196,6 +199,26 @@ curl http://localhost:8088/monitor
 
 # API 文档
 open http://localhost:8088/docs
+
+# 检查负载状态
+curl http://localhost:8088/load/status
+
+# 查看调度器状态
+curl http://localhost:8088/scheduler/status
+
+# 查看集群健康状态
+curl http://localhost:8088/cluster/health
+
+# 提交测试任务
+curl -X POST http://localhost:8088/submit \
+  -H "Content-Type: application/json" \
+  -d '{
+    "image_path": "test.jpg", 
+    "prompt": "simple test", 
+    "image_size": "512*512", 
+    "frame_num": 81,
+    "sample_steps": 15
+  }'
 
 # 性能测试
 python3 tests/benchmark.py --quick

@@ -196,6 +196,47 @@ class Diagnostic:
             print(f"❌ Health check: {e}")
             return False
 
+
+    def check_load_balancing(self):
+        """检查负载均衡功能"""
+        print("\n🎯 Load Balancing Check:")
+        print("-" * 30)
+        
+        try:
+            # 检查负载监控模块 - 🔥 使用原有路径结构
+            sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
+            from utils.load_monitor import LoadMonitor
+            print("  ✅ Load monitor module available")
+            
+            # 检查环境变量
+            import os
+            enable_lb = os.environ.get("ENABLE_DYNAMIC_SCHEDULING", "true")
+            print(f"  ✅ ENABLE_DYNAMIC_SCHEDULING: {enable_lb}")
+            
+            # 如果服务运行中，检查负载均衡API
+            try:
+                response = requests.get("http://localhost:8088/load/status", timeout=5)
+                if response.status_code == 200:
+                    data = response.json()
+                    if data.get("load_balancing"):
+                        print("  ✅ Load balancing API active")
+                        print(f"    - Device count: {data.get('device_count', 'N/A')}")
+                        print(f"    - Device type: {data.get('device_type', 'N/A')}")
+                    else:
+                        print("  ⚠️  Load balancing disabled")
+                else:
+                    print("  ⚠️  Load balancing API not responding")
+            except:
+                print("  ℹ️  Load balancing API not available (service not running)")
+                
+        except ImportError:
+            print("  ❌ Load monitor module not found")
+            self.results["failed"] += 1
+        except Exception as e:
+            print(f"  ❌ Load balancing check failed: {e}")
+            self.results["failed"] += 1
+
+
     def generate_suggestions(self):
         """生成简单建议"""
         print("\n💡 Suggestions")
@@ -226,6 +267,7 @@ class Diagnostic:
         self.check_memory()
         self.test_t5_warmup()
         self.check_health()
+        self.check_load_balancing()
         
         # 总结
         print(f"\n📊 Summary: {self.results['passed']} passed, {self.results['failed']} failed, {self.results['warnings']} warnings")

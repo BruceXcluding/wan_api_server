@@ -4,9 +4,15 @@
 """
 
 from .device_detector import detect_device
+from .load_monitor import LoadMonitor, DeviceLoad  
+from .dynamic_scheduler import DynamicGPUScheduler, TaskResourcePlan
 
 __all__ = [
-    "detect_device",
+    'detect_device',
+    'LoadMonitor', 
+    'DeviceLoad',
+    'DynamicGPUScheduler',
+    'TaskResourcePlan'
 ]
 
 __version__ = "1.0.0"

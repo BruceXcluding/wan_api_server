@@ -20,6 +20,8 @@ import uvicorn
 from schemas import VideoSubmitRequest, VideoSubmitResponse, VideoStatusResponse, TaskStatus
 from pipelines.pipeline_factory import create_pipeline
 from utils.device_detector import detect_device
+from utils.load_monitor import LoadMonitor
+from utils.dynamic_scheduler import DynamicGPUScheduler
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
@@ -29,6 +31,8 @@ task_queue = []
 status_dict = {}
 cancelled_tasks = set()
 pipeline = None
+load_monitor = None
+dynamic_scheduler = None
 
 def init_distributed():
     """初始化分布式环境"""
@@ -207,10 +211,107 @@ def create_app():
             "total_tasks": len(status_dict)
         }
 
+
+    @app.get("/load/status")
+    async def get_load_status():
+        """获取负载状态"""
+        global dynamic_scheduler
+        if not dynamic_scheduler:
+            return {
+                "load_balancing": False,
+                "message": "Load balancing not available"
+            }
+        
+        loads = dynamic_scheduler.load_monitor.get_current_loads()
+        status = dynamic_scheduler.load_monitor.get_load_status()
+        
+        return {
+            "load_balancing": True,
+            "device_count": dynamic_scheduler.world_size,
+            "device_type": dynamic_scheduler.device_type,
+            "status": status,
+            "details": {
+                str(rank): {
+                    "memory_used_gb": round(load.memory_used_gb, 2),
+                    "memory_total_gb": round(load.memory_total_gb, 2),
+                    "utilization": round(load.utilization, 3),
+                    "load_score": round(load.load_score, 3)
+                }
+                for rank, load in loads.items()
+            },
+            "active_tasks": len(status_dict)
+        }
+
+    @app.get("/load/metrics")
+    async def get_load_metrics():
+        """获取详细负载指标"""
+        global dynamic_scheduler
+        if not dynamic_scheduler:
+            return {"error": "Load monitor not available"}
+        
+        loads = dynamic_scheduler.load_monitor.get_current_loads()
+        return {
+            "timestamp": time.time(),
+            "device_count": dynamic_scheduler.world_size,
+            "device_type": dynamic_scheduler.device_type,
+            "devices": {
+                str(rank): {
+                    "memory_used_gb": round(load.memory_used_gb, 2),
+                    "memory_total_gb": round(load.memory_total_gb, 2),
+                    "utilization": round(load.utilization, 3),
+                    "load_score": round(load.load_score, 3),
+                    "last_update": load.last_update
+                }
+                for rank, load in loads.items()
+            }
+        }
+
+    @app.get("/scheduler/status")
+    async def get_scheduler_status():
+        """获取动态调度器状态"""
+        global dynamic_scheduler
+        if dynamic_scheduler:
+            return dynamic_scheduler.get_scheduler_status()
+        else:
+            return {"dynamic_scheduling": False, "message": "Dynamic scheduling not enabled"}
+
+    @app.get("/cluster/health")
+    async def get_cluster_health():
+        """获取集群健康状态"""
+        global dynamic_scheduler
+        health_info = {
+            "status": "healthy",
+            "timestamp": time.time(),
+            "active_tasks": len(status_dict),
+            "queue_size": len(task_queue),
+            "load_balancing": dynamic_scheduler is not None
+        }
+        
+        if dynamic_scheduler:
+            status = dynamic_scheduler.load_monitor.get_load_status()
+            health_info.update({
+                "device_status": {
+                    "total_devices": dynamic_scheduler.world_size,
+                    "available": len(status["available"]),
+                    "busy": len(status["busy"]),
+                    "overloaded": len(status["overloaded"])
+                }
+            })
+            
+            # 健康状态评估
+            if len(status["overloaded"]) > dynamic_scheduler.world_size * 0.7:
+                health_info["status"] = "critical"
+            elif len(status["overloaded"]) > dynamic_scheduler.world_size * 0.3:
+                health_info["status"] = "warning"
+        
+        return health_info
+
     return app
 
 def process_tasks():
-    """处理任务队列"""
+    """处理任务队列 - 支持动态GPU调度"""
+    global dynamic_scheduler
+    
     while task_queue:
         task_id, request = task_queue.pop(0)
         
@@ -219,19 +320,50 @@ def process_tasks():
             continue
             
         try:
-            logger.info(f"🚀 Processing task: {task_id}")
+            logger.info(f"🚀 Processing task with dynamic scheduling: {task_id}")
+            
+            # 🔥 动态GPU调度
+            assigned_ranks = None
+            if dynamic_scheduler:
+                assigned_ranks = dynamic_scheduler.schedule_task(task_id, request)
+                
+                if assigned_ranks is None:
+                    # 任务被加入队列，等待GPU资源
+                    logger.info(f"Task {task_id}: Queued, waiting for GPU resources")
+                    time.sleep(5)  # 等待一段时间后重试
+                    continue
+                
+                logger.info(f"Task {task_id}: Assigned to GPUs {assigned_ranks}")
+            else:
+                # 回退到全GPU模式
+                assigned_ranks = list(range(int(os.environ.get("WORLD_SIZE", 1))))
+            
             status_dict[task_id]["status"] = TaskStatus.RUNNING
             status_dict[task_id]["updated_at"] = datetime.now().isoformat()
             status_dict[task_id]["start_time"] = datetime.now()
+            status_dict[task_id]["assigned_gpus"] = assigned_ranks  # 🔥 记录分配的GPU
             
-            # 🔥 关键修复：广播任务给所有rank
+            # 🔥 只广播给分配的ranks
             world_size = int(os.environ.get("WORLD_SIZE", 1))
-            if world_size > 1:
-                import torch.distributed as dist
-                if dist.is_initialized():
-                    task_data = [{'request': request, 'task_id': task_id}]
-                    dist.broadcast_object_list(task_data, src=0)
-                    logger.info(f"Task {task_id} broadcasted to all {world_size} ranks")
+            if world_size > 1 and len(assigned_ranks) < world_size:
+                # 动态子组模式
+                task_data = {
+                    'request': request, 
+                    'task_id': task_id,
+                    'assigned_ranks': assigned_ranks,
+                    'dynamic_mode': True
+                }
+                
+                # 🔥 发送给所有rank，让它们自己判断是否参与
+                broadcast_data = [task_data]
+                dist.broadcast_object_list(broadcast_data, src=0)
+                logger.info(f"Task {task_id}: Dynamic assignment broadcasted")
+                
+            elif world_size > 1:
+                # 全GPU模式
+                task_data = [{'request': request, 'task_id': task_id}]
+                dist.broadcast_object_list(task_data, src=0)
+                logger.info(f"Task {task_id}: Full GPU mode broadcasted")
             
             def progress_callback(progress, stage="Processing"):
                 if task_id in cancelled_tasks:
@@ -240,11 +372,21 @@ def process_tasks():
                 status_dict[task_id]["current_stage"] = stage
                 
                 elapsed = datetime.now() - status_dict[task_id]["start_time"]
-                logger.info(f"📊 Task {task_id}: {stage} ({progress:.1f}%) - Elapsed: {elapsed}")
+                logger.info(f"📊 Task {task_id}: {stage} ({progress:.1f}%) - GPUs: {assigned_ranks} - Elapsed: {elapsed}")
                 return progress
             
-            # 🔥 现在所有rank都会参与这个调用
-            result = pipeline.generate_video(request, task_id, progress_callback=progress_callback)
+            # 🔥 执行任务
+            current_rank = int(os.environ.get("RANK", 0))
+            if current_rank in assigned_ranks:
+                # 只有被分配的rank执行任务
+                result = pipeline.generate_video(request, task_id, progress_callback=progress_callback)
+            else:
+                # 其他rank跳过这个任务
+                result = None
+            
+            # 🔥 任务完成，释放GPU资源
+            if dynamic_scheduler:
+                dynamic_scheduler.release_gpus(task_id)
             
             # 🔥 添加：任务完成后等待所有rank同步
             if world_size > 1:
@@ -255,7 +397,7 @@ def process_tasks():
                         logger.info(f"Task {task_id}: All ranks synchronized after completion")
                     except Exception as e:
                         logger.warning(f"Task {task_id}: Post-completion barrier failed: {e}")
-                    
+                        
                     # 🔥 新添加：发送完成信号，让其他rank结束当前任务等待
                     try:
                         completion_signal = [{"type": "TASK_COMPLETED", "task_id": task_id}]
@@ -279,6 +421,10 @@ def process_tasks():
             logger.info(f"✅ Task {task_id} completed successfully in {total_time}")
             
         except Exception as e:
+            # 🔥 异常时也要释放资源
+            if dynamic_scheduler:
+                dynamic_scheduler.release_gpus(task_id)
+            
             # 🔥 新增：异常时也记录耗时和发送完成信号
             if "start_time" in status_dict[task_id]:
                 total_time = datetime.now() - status_dict[task_id]["start_time"]
@@ -355,13 +501,12 @@ def task_processing_loop():
             time.sleep(1)
 
 def distributed_worker_loop():
-    """简化的分布式工作循环"""
+    """支持动态调度的工作循环"""
     rank = int(os.environ.get("RANK", 0))
     
-    logger.info(f"Rank {rank}: Worker ready for distributed tasks")
+    logger.info(f"Rank {rank}: Worker ready for dynamic scheduling")
     
     if rank == 0:
-        logger.info("Rank 0: Main worker loop handled by task processing")
         return
     
     import torch.distributed as dist
@@ -369,90 +514,75 @@ def distributed_worker_loop():
     while True:
         try:
             if dist.is_initialized():
-                # 🔥 等待rank 0的信号
                 signal = [None]
+                dist.broadcast_object_list(signal, src=0)
                 
-                try:
-                    dist.broadcast_object_list(signal, src=0)
+                if signal[0] is not None:
+                    signal_data = signal[0]
+                    signal_type = signal_data.get("type", "TASK")
                     
-                    if signal[0] is not None:
-                        signal_type = signal[0].get("type", "TASK")
+                    if signal_type == "SHUTDOWN":
+                        logger.info(f"Rank {rank}: Received shutdown signal")
+                        break
+                    elif signal_type == "IDLE":
+                        continue
+                    elif "request" in signal_data and "task_id" in signal_data:
+                        request = signal_data['request']
+                        task_id = signal_data['task_id']
                         
-                        if signal_type == "SHUTDOWN":
-                            logger.info(f"Rank {rank}: Received shutdown signal")
+                        # 🔥 检查是否是动态调度模式
+                        if signal_data.get('dynamic_mode'):
+                            assigned_ranks = signal_data.get('assigned_ranks', [])
                             
-                            # 🔥 确认关闭
-                            try:
-                                dist.barrier(timeout=timedelta(seconds=5))
-                                logger.info(f"Rank {rank}: Shutdown confirmed")
-                            except Exception as e:
-                                logger.warning(f"Rank {rank}: Shutdown barrier failed: {e}")
-                            break
-                            
-                        elif signal_type == "IDLE":
-                            logger.debug(f"Rank {rank}: Server idle, continuing to wait...")
-                            continue
-                            
-                        elif signal_type in ["TASK_COMPLETED", "TASK_FAILED"]:
-                            logger.debug(f"Rank {rank}: Task completion signal received")
-                            continue
-                            
-                        elif "request" in signal[0] and "task_id" in signal[0]:
-                            # 🔥 这是真正的任务
-                            request, task_id = signal[0]['request'], signal[0]['task_id']
-                            logger.info(f"Rank {rank}: Received task {task_id}")
-                            
-                            try:
-                                # 🔥 执行任务
-                                pipeline.generate_video(request, task_id)
-                                logger.info(f"Rank {rank}: Task {task_id} completed successfully")
-                                
-                            except Exception as e:
-                                logger.error(f"Rank {rank}: Task {task_id} failed: {e}")
-                                
-                            # 🔥 任务完成后同步
-                            try:
-                                dist.barrier(timeout=timedelta(seconds=30))
-                                logger.debug(f"Rank {rank}: Post-task barrier completed")
-                            except Exception as e:
-                                logger.warning(f"Rank {rank}: Post-task barrier failed: {e}")
-                            
-                            # 🔥 等待完成确认
-                            try:
-                                completion_signal = [None]
-                                dist.broadcast_object_list(completion_signal, src=0)
-                                logger.debug(f"Rank {rank}: Completion signal received")
-                            except Exception as e:
-                                logger.warning(f"Rank {rank}: Failed to receive completion signal: {e}")
+                            if rank in assigned_ranks:
+                                logger.info(f"Rank {rank}: Participating in dynamic task {task_id}")
+                                try:
+                                    pipeline.generate_video(request, task_id)
+                                    logger.info(f"Rank {rank}: Dynamic task {task_id} completed")
+                                except Exception as e:
+                                    logger.error(f"Rank {rank}: Dynamic task {task_id} failed: {e}")
+                            else:
+                                logger.info(f"Rank {rank}: Not assigned to task {task_id}, staying idle")
+                                continue
                         else:
-                            logger.debug(f"Rank {rank}: Unknown signal type: {signal_type}")
-                    else:
-                        logger.debug(f"Rank {rank}: Received empty signal")
+                            # 传统全GPU模式
+                            logger.info(f"Rank {rank}: Participating in full-GPU task {task_id}")
+                            try:
+                                pipeline.generate_video(request, task_id)
+                                logger.info(f"Rank {rank}: Full-GPU task {task_id} completed")
+                            except Exception as e:
+                                logger.error(f"Rank {rank}: Full-GPU task {task_id} failed: {e}")
                         
-                except Exception as e:
-                    # 🔥 broadcast失败，短暂等待后重试
-                    logger.warning(f"Rank {rank}: Broadcast failed: {e}")
-                    time.sleep(1)
-                    
-            else:
-                logger.warning(f"Rank {rank}: Distributed not initialized")
-                time.sleep(1)
+                        # 同步等待
+                        try:
+                            dist.barrier(timeout=timedelta(seconds=30))
+                        except Exception as e:
+                            logger.warning(f"Rank {rank}: Barrier failed: {e}")
                 
-        except KeyboardInterrupt:
-            logger.info(f"Rank {rank}: Received interrupt")
-            break
         except Exception as e:
-            logger.error(f"Rank {rank}: Worker error: {e}")
+            logger.warning(f"Rank {rank}: Worker error: {e}")
             time.sleep(1)
     
-    logger.info(f"Rank {rank}: Worker exited gracefully")
+    logger.info(f"Rank {rank}: Dynamic worker exited")
 
 def main():
-    global pipeline
+    global pipeline, load_monitor, dynamic_scheduler
     rank, local_rank, world_size = init_distributed()
     
     pipeline = create_pipeline()
     logger.info(f"Rank {rank}: Pipeline created successfully")
+    
+    # 🔥 初始化动态调度器
+    if rank == 0 and world_size > 1:
+        enable_dynamic = os.environ.get("ENABLE_DYNAMIC_SCHEDULING", "true").lower() == "true"
+        if enable_dynamic:
+            from utils.device_detector import detect_device
+            device_type, _, _ = detect_device()
+            dynamic_scheduler = DynamicGPUScheduler(world_size=world_size, device_type=device_type)
+            dynamic_scheduler.start()
+            logger.info("🎯 Dynamic GPU scheduling enabled")
+        else:
+            logger.info("Dynamic GPU scheduling disabled")
     
     if rank == 0:
         app = create_app()
@@ -466,6 +596,9 @@ def main():
         except KeyboardInterrupt:
             logger.info("Shutting down gracefully...")
         finally:
+            # 🔥 添加：关闭动态调度器
+            if dynamic_scheduler:
+                dynamic_scheduler.stop()
             logger.info("FastAPI server stopped")
     else:
         # 🔥 其他rank直接运行工作循环

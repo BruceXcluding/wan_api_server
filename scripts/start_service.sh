@@ -269,6 +269,7 @@ if [ "$DEVICE_COUNT" -gt 1 ]; then
         echo -e "${BLUE}🔗 Auto-calculated: Ulysses=${ULYSSES_SIZE}, Ring=${RING_SIZE}${NC}"
     fi
     
+
     # 验证配置
     PRODUCT=$((ULYSSES_SIZE * RING_SIZE))
     if [ "$PRODUCT" -ne "$DEVICE_COUNT" ]; then
@@ -276,6 +277,9 @@ if [ "$DEVICE_COUNT" -gt 1 ]; then
         export ULYSSES_SIZE="$DEVICE_COUNT"
         export RING_SIZE="1"
     fi
+    export ENABLE_DYNAMIC_SCHEDULING="${ENABLE_DYNAMIC_SCHEDULING:-true}"
+    export LOAD_MONITOR_INTERVAL="${LOAD_MONITOR_INTERVAL:-10}"
+    export GPU_ALLOCATION_STRATEGY="${GPU_ALLOCATION_STRATEGY:-adaptive}"
 else
     export ULYSSES_SIZE="1"
     export RING_SIZE="1"
@@ -547,6 +551,9 @@ if [ "$DEVICE_COUNT" -gt 1 ]; then
     echo "  - World Size: $DEVICE_COUNT"
     echo "  - Master: $MASTER_ADDR:$MASTER_PORT"
     echo "  - Distributed: Ulysses=$ULYSSES_SIZE, Ring=$RING_SIZE"
+    echo -e "${BLUE}🎯 Dynamic GPU Scheduling:${NC}"
+    echo "  - Dynamic Scheduling: $ENABLE_DYNAMIC_SCHEDULING"
+    echo "  - Monitor Interval: ${LOAD_MONITOR_INTERVAL}s"
     
     PRODUCT=$((ULYSSES_SIZE * RING_SIZE))
     if [ "$PRODUCT" -ne "$DEVICE_COUNT" ]; then
@@ -569,6 +576,12 @@ echo "  - Backend: $BACKEND"
 echo "  - Mode: $([ "$DEVICE_COUNT" -gt 1 ] && echo "MULTI-DEVICE" || echo "SINGLE-DEVICE")"
 echo "  - Distributed: $([ "$DEVICE_COUNT" -gt 1 ] && echo "YES" || echo "NO")"
 echo "  - Pipeline: ${PIPELINE_TYPE:-auto}"
+# 🔥 新增：显示动态调度配置
+if [ "$ENABLE_DYNAMIC_SCHEDULING" = "true" ]; then
+    echo "  - Dynamic Scheduling: $ENABLE_DYNAMIC_SCHEDULING"
+    echo "  - Monitor Interval: ${LOAD_MONITOR_INTERVAL}s"
+    echo "  - Allocation Strategy: ${GPU_ALLOCATION_STRATEGY}"
+fi
 
 # 🔥 修改：启动服务（支持单卡选项）
 if [ "$DEVICE_COUNT" -gt 1 ]; then
