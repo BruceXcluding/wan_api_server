@@ -69,7 +69,7 @@ class CUDAPipeline(BasePipeline):
 
     def _load_model(self):
         torch.cuda.set_device(self.local_rank)
-        print(f"[GPU {self.local_rank}] Rank {self.rank}: Loading WanI2V...")  # 🔥 添加强制输出
+        print(f"[GPU {self.local_rank}] Rank {self.rank}: Loading WanI2V...")
         logger.info(f"Rank {self.rank}: Loading WanI2V on CUDA:{self.local_rank} (t5_cpu={self.t5_cpu})")
 
         cfg = WAN_CONFIGS.get("i2v-14B")
@@ -89,27 +89,38 @@ class CUDAPipeline(BasePipeline):
                 "dit_fsdp": self.dit_fsdp,
                 "use_usp": (self.ulysses_size > 1 or self.ring_size > 1),
             })
-            print(f"[GPU {self.local_rank}] Rank {self.rank}: Multi-GPU config enabled")  # 🔥 添加
+            print(f"[GPU {self.local_rank}] Rank {self.rank}: Multi-GPU config enabled")
             logger.info(f"Rank {self.rank}: Multi-GPU config enabled")
 
         model = wan.WanI2V(**model_config)
-        print(f"[GPU {self.local_rank}] Rank {self.rank}: WanI2V loaded!")  # 🔥 添加
+        print(f"[GPU {self.local_rank}] Rank {self.rank}: WanI2V loaded!")
         logger.info(f"Rank {self.rank}: WanI2V loaded successfully")
 
         return model
 
     def _generate_video_device_specific(self, request, img, progress_callback=None):
-        """设备特定的视频生成 - 确保分布式计算"""
+        """设备特定的视频生成 - 支持动态调度"""
         print(f"[GPU {self.local_rank}] Rank {self.rank}: STARTING VIDEO GENERATION")
         logger.info(f"Rank {self.rank}: Generating video on CUDA:{self.local_rank}")
-    
-        # 🔥 分布式同步点和参数广播
-        if self.world_size > 1:
+
+        # 🔥 检查当前rank是否应该参与计算
+        current_rank = int(os.environ.get("RANK", self.rank))
+        expected_world_size = int(os.environ.get("WORLD_SIZE", self.world_size))
+        
+        if current_rank >= expected_world_size:
+            logger.info(f"Rank {current_rank}: Skipping CUDA generation (not in active group, expected_world_size={expected_world_size})")
+            return None
+
+        # 🔥 分布式同步点和参数广播（只有参与的rank）
+        if expected_world_size > 1:
             import torch.distributed as dist
             if dist.is_initialized():
                 print(f"[GPU {self.local_rank}] Rank {self.rank}: Broadcasting parameters...")
-    
-                if self.rank == 0:
+
+                # 🔥 使用动态的rank作为src判断
+                dynamic_rank_0 = (current_rank == 0)
+                
+                if dynamic_rank_0:
                     num_frames = getattr(request, "num_frames", 81)
                     if num_frames != 81:
                         logger.warning(f"num_frames {num_frames} not supported, using 81")
@@ -136,8 +147,8 @@ class CUDAPipeline(BasePipeline):
                     
                     params = {
                         'prompt': request.prompt,
-                        'image_size': image_size,  # 🔥 使用验证后的尺寸
-                        'num_frames': num_frames,  # 🔥 使用验证后的帧数
+                        'image_size': image_size,
+                        'num_frames': num_frames,
                         'sample_shift': getattr(request, "sample_shift", 5.0),
                         'sample_solver': getattr(request, "sample_solver", "unipc"),
                         'sample_steps': getattr(request, "sample_steps", 40),
@@ -148,15 +159,15 @@ class CUDAPipeline(BasePipeline):
                     params_list = [params]
                 else:
                     params_list = [None]
-    
-                # 广播参数
+
+                # 🔥 只有参与的rank进行广播
                 dist.broadcast_object_list(params_list, src=0)
                 params = params_list[0]
-    
+
                 print(f"[GPU {self.local_rank}] Rank {self.rank}: Parameters received")
                 dist.barrier()
                 print(f"[GPU {self.local_rank}] Rank {self.rank}: All ranks synchronized")
-    
+
                 # 使用广播的参数
                 prompt = params['prompt']
                 image_size = params['image_size']
@@ -168,7 +179,7 @@ class CUDAPipeline(BasePipeline):
                 seed = params['seed']
                 offload_model = params['offload_model']
             else:
-                # 单卡模式 - 也需要参数验证
+                # 🔥 非分布式模式的参数处理
                 prompt = request.prompt
                 image_size = getattr(request, "image_size", "1280*720")
                 num_frames = 81 
@@ -177,9 +188,9 @@ class CUDAPipeline(BasePipeline):
                 sample_steps = getattr(request, "sample_steps", 40)
                 guidance_scale = getattr(request, "guidance_scale", 5.0)
                 seed = getattr(request, "seed", 42) if getattr(request, "seed", None) is not None else 42
-                offload_model = getattr(request, "offload_model", self.offload_model)  # 🔥 添加这个
+                offload_model = getattr(request, "offload_model", self.offload_model)
         else:
-            # 单卡模式
+            # 🔥 单卡模式参数处理
             prompt = request.prompt
             image_size = getattr(request, "image_size", "1280*720")
             num_frames = 81
@@ -188,7 +199,7 @@ class CUDAPipeline(BasePipeline):
             sample_steps = getattr(request, "sample_steps", 40)
             guidance_scale = getattr(request, "guidance_scale", 5.0)
             seed = getattr(request, "seed", 42) if getattr(request, "seed", None) is not None else 42
-            offload_model = getattr(request, "offload_model", self.offload_model)  # 🔥 添加这个
+            offload_model = getattr(request, "offload_model", self.offload_model)
 
         # 确保图片在正确设备上
         if hasattr(img, 'to'):
@@ -205,14 +216,14 @@ class CUDAPipeline(BasePipeline):
         height, width = int(height_str), int(width_str)
         max_area = width * height
 
-        if progress_callback and self.rank == 0:
+        if progress_callback and current_rank == 0:
             progress_callback(15, "模型推理")
 
-        # 每个rank都调用model.generate
+        # 🔥 每个参与的rank都调用model.generate
         print(f"[GPU {self.local_rank}] Rank {self.rank}: Calling model.generate()...")
         logger.info(f"Rank {self.rank}: Starting generation - {width}x{height}, {num_frames} frames")
 
-        # 🔥 使用广播的参数（关键修复）
+        # 🔥 使用广播的参数进行生成
         video = self.model.generate(
             prompt,
             img,
@@ -223,14 +234,14 @@ class CUDAPipeline(BasePipeline):
             sampling_steps=sample_steps,
             guide_scale=guidance_scale,
             seed=seed,
-            offload_model=offload_model,  # 🔥 使用广播的参数
+            offload_model=offload_model,
         )
 
         print(f"[GPU {self.local_rank}] Rank {self.rank}: Generation COMPLETED!")
         logger.info(f"Rank {self.rank}: Generation completed on CUDA:{self.local_rank}")
 
-        # 分布式同步
-        if self.world_size > 1:
+        # 🔥 分布式同步（只有参与的rank）
+        if expected_world_size > 1:
             import torch.distributed as dist
             if dist.is_initialized():
                 dist.barrier()
@@ -240,7 +251,9 @@ class CUDAPipeline(BasePipeline):
 
     def _save_video(self, video_tensor, output_path: str):
         """保存视频 - 只有rank 0执行"""
-        if self.rank == 0:
+        current_rank = int(os.environ.get("RANK", self.rank))
+        
+        if current_rank == 0:
             logger.info(f"Saving video to {output_path}")
             try:
                 from wan.utils.utils import cache_video
@@ -248,7 +261,7 @@ class CUDAPipeline(BasePipeline):
                 cache_video(
                     tensor=video_tensor[None] if video_tensor.ndim == 4 else video_tensor,
                     save_file=output_path,
-                    fps=16,  # 🔥 使用固定fps
+                    fps=16,
                     nrow=1,
                     normalize=True,
                     value_range=(-1, 1)

@@ -18,7 +18,7 @@ from wan.configs import WAN_CONFIGS, MAX_AREA_CONFIGS
 logger = logging.getLogger(__name__)
 
 class NPUPipeline(BasePipeline):
-    """华为昇腾 NPU 视频生成管道 - 支持分布式"""
+    """华为昇腾 NPU 视频生成管道 - 支持动态调度"""
 
     def __init__(self, ckpt_dir: str, rank=0, world_size=1, **model_args):
         if not NPU_AVAILABLE:
@@ -243,13 +243,91 @@ class NPUPipeline(BasePipeline):
             return Image.new('RGB', (512, 512), color='red')
 
     def _generate_video_device_specific(self, request, img, progress_callback=None):
-        """NPU设备特定的视频生成"""
+        """NPU设备特定的视频生成 - 支持动态调度"""
+        print(f"[NPU {self.local_rank}] Rank {self.rank}: STARTING VIDEO GENERATION")
+        logger.info(f"Rank {self.rank}: Generating video on NPU:{self.local_rank}")
+
+        # 🔥 检查当前rank是否应该参与计算
+        current_rank = int(os.environ.get("RANK", self.rank))
+        expected_world_size = int(os.environ.get("WORLD_SIZE", self.world_size))
+        
+        if current_rank >= expected_world_size:
+            logger.info(f"Rank {current_rank}: Skipping NPU generation (not in active group, expected_world_size={expected_world_size})")
+            return None
         
         # 🔥 在推理前动态更新transformer args
         self._update_transformer_args(request)
         
-        if self.world_size > 1 and dist.is_initialized():
-            if self.rank == 0:
+        # 🔥 分布式同步点和参数广播（只有参与的rank）
+        if expected_world_size > 1:
+            import torch.distributed as dist
+            if dist.is_initialized():
+                print(f"[NPU {self.local_rank}] Rank {self.rank}: Broadcasting parameters...")
+
+                # 🔥 使用动态的rank作为src判断
+                dynamic_rank_0 = (current_rank == 0)
+                
+                if dynamic_rank_0:
+                    image_size = getattr(request, "image_size", "1280*720")
+                    
+                    if '*' in image_size:
+                        h_str, w_str = image_size.split('*')
+                    elif 'x' in image_size:
+                        w_str, h_str = image_size.split('x')
+                    else:
+                        h_str, w_str = "720", "1280"
+                    
+                    height, width = int(h_str), int(w_str)
+                    height = (height // 32) * 32
+                    width = (width // 32) * 32
+                    
+                    params = {
+                        'prompt': request.prompt,
+                        'height': height,
+                        'width': width,
+                        'max_area': width * height,
+                        'shift': getattr(request, "sample_shift", 5.0),
+                        'solver': getattr(request, "sample_solver", "unipc"),
+                        'steps': getattr(request, "sample_steps", 40),
+                        'guidance': getattr(request, "guidance_scale", 5.0),
+                        'seed': getattr(request, "seed", 42) if getattr(request, "seed", None) is not None else 42,
+                        'offload': getattr(request, "offload_model", False),
+                        'image_size': image_size,
+                        'frame_num': getattr(request, "frame_num", 81),
+                    }
+                    params_list = [params]
+                else:
+                    params_list = [None]
+
+                # 🔥 只有参与的rank进行广播
+                dist.broadcast_object_list(params_list, src=0)
+                params = params_list[0]
+                
+                print(f"[NPU {self.local_rank}] Rank {self.rank}: Parameters received")
+                
+                # 🔥 所有参与的rank都需要更新transformer args
+                if current_rank != 0:
+                    # 为非0 rank创建临时request对象来更新args
+                    temp_request = type('Request', (), params)()
+                    self._update_transformer_args(temp_request)
+                
+                prompt = params['prompt']
+                height = params['height']
+                width = params['width']
+                max_area = params['max_area']
+                shift = params['shift']
+                solver = params['solver']
+                steps = params['steps']
+                guidance = params['guidance']
+                seed = params['seed']
+                offload = params['offload']
+                frame_num = params['frame_num']
+                
+                dist.barrier()
+                print(f"[NPU {self.local_rank}] Rank {self.rank}: All ranks synchronized")
+            else:
+                # 🔥 非分布式模式的参数处理
+                prompt = request.prompt
                 image_size = getattr(request, "image_size", "1280*720")
                 
                 if '*' in image_size:
@@ -262,46 +340,17 @@ class NPUPipeline(BasePipeline):
                 height, width = int(h_str), int(w_str)
                 height = (height // 32) * 32
                 width = (width // 32) * 32
+                max_area = width * height
                 
-                params = {
-                    'prompt': request.prompt,
-                    'height': height,
-                    'width': width,
-                    'max_area': width * height,
-                    'shift': getattr(request, "sample_shift", 5.0),
-                    'solver': getattr(request, "sample_solver", "unipc"),
-                    'steps': getattr(request, "sample_steps", 40),
-                    'guidance': getattr(request, "guidance_scale", 5.0),
-                    'seed': getattr(request, "seed", 42) if getattr(request, "seed", None) is not None else 42,
-                    'offload': getattr(request, "offload_model", False),
-                    'image_size': image_size,  # 🔥 传递完整的image_size
-                }
-                params_list = [params]
-            else:
-                params_list = [None]
-
-            dist.broadcast_object_list(params_list, src=0)
-            params = params_list[0]
-            
-            # 🔥 所有rank都需要更新transformer args
-            if self.rank != 0:
-                # 为非0 rank创建临时request对象来更新args
-                temp_request = type('Request', (), params)()
-                self._update_transformer_args(temp_request)
-            
-            prompt = params['prompt']
-            height = params['height']
-            width = params['width']
-            max_area = params['max_area']
-            shift = params['shift']
-            solver = params['solver']
-            steps = params['steps']
-            guidance = params['guidance']
-            seed = params['seed']
-            offload = params['offload']
-            
-            dist.barrier()
+                shift = getattr(request, "sample_shift", 5.0)
+                solver = getattr(request, "sample_solver", "unipc")
+                steps = getattr(request, "sample_steps", 40)
+                guidance = getattr(request, "guidance_scale", 5.0)
+                seed = getattr(request, "seed", 42) if getattr(request, "seed", None) is not None else 42
+                offload = getattr(request, "offload_model", False)
+                frame_num = getattr(request, "frame_num", 81)
         else:
+            # 🔥 单卡模式参数处理
             prompt = request.prompt
             image_size = getattr(request, "image_size", "1280*720")
             
@@ -323,6 +372,7 @@ class NPUPipeline(BasePipeline):
             guidance = getattr(request, "guidance_scale", 5.0)
             seed = getattr(request, "seed", 42) if getattr(request, "seed", None) is not None else 42
             offload = getattr(request, "offload_model", False)
+            frame_num = getattr(request, "frame_num", 81)
 
         if progress_callback:
             progress_callback(15, "模型推理")
@@ -330,12 +380,16 @@ class NPUPipeline(BasePipeline):
         if self.model is None:
             raise RuntimeError(f"Rank {self.rank}: Model is None")
 
+        # 🔥 每个参与的rank都调用model.generate
+        print(f"[NPU {self.local_rank}] Rank {self.rank}: Calling model.generate()...")
+        logger.info(f"Rank {self.rank}: Starting generation - {width}x{height}, {frame_num} frames")
+
         try:
             video = self.model.generate(
                 prompt,
                 img,
                 max_area=max_area,
-                frame_num=81,
+                frame_num=frame_num,
                 shift=shift,
                 sample_solver=solver,
                 sampling_steps=steps,
@@ -348,17 +402,27 @@ class NPUPipeline(BasePipeline):
             logger.error(f"Rank {self.rank}: model.generate failed: {e}")
             raise
 
+        print(f"[NPU {self.local_rank}] Rank {self.rank}: Generation COMPLETED!")
+        logger.info(f"Rank {self.rank}: Generation completed on NPU:{self.local_rank}")
+
         if progress_callback:
             progress_callback(85, "推理完成")
 
-        if self.world_size > 1 and dist.is_initialized():
-            dist.barrier()
+        # 🔥 分布式同步（只有参与的rank）
+        if expected_world_size > 1:
+            import torch.distributed as dist
+            if dist.is_initialized():
+                dist.barrier()
+                logger.info(f"Rank {self.rank}: Final sync completed")
 
         return video
     
     def _save_video(self, video_tensor, output_path: str):
-        """保存视频"""
-        if self.rank == 0:
+        """保存视频 - 只有rank 0执行"""
+        current_rank = int(os.environ.get("RANK", self.rank))
+        
+        if current_rank == 0:
+            logger.info(f"Saving video to {output_path}")
             try:
                 from wan.utils.utils import cache_video
                 cache_video(
@@ -369,13 +433,15 @@ class NPUPipeline(BasePipeline):
                     normalize=True,
                     value_range=(-1, 1)
                 )
+                logger.info(f"Video saved successfully: {output_path}")
             except Exception as e:
                 logger.error(f"Rank {self.rank}: Failed to save video: {e}")
                 os.makedirs(os.path.dirname(output_path), exist_ok=True)
                 with open(output_path, "wb") as f:
                     f.write(b"FAKE_VIDEO_DATA")
         
-        if self.world_size > 1 and dist.is_initialized():
+        expected_world_size = int(os.environ.get("WORLD_SIZE", self.world_size))
+        if expected_world_size > 1 and dist.is_initialized():
             dist.barrier()
 
     def _log_memory_usage(self):
@@ -383,16 +449,15 @@ class NPUPipeline(BasePipeline):
         try:
             memory_allocated = torch_npu.npu.memory_allocated(self.local_rank) / 1024**3
             memory_reserved = torch_npu.npu.memory_reserved(self.local_rank) / 1024**3
-            if self.rank == 0:
-                logger.info(f"NPU:{self.local_rank} memory: "
-                           f"{memory_allocated:.2f}GB allocated, {memory_reserved:.2f}GB reserved")
-        except Exception:
-            pass
+            logger.info(f"Rank {self.rank} NPU Memory - Allocated: {memory_allocated:.2f}GB, Reserved: {memory_reserved:.2f}GB")
+        except Exception as e:
+            logger.warning(f"Rank {self.rank}: Failed to get NPU memory info: {e}")
                 
     def _empty_cache(self):
         """清空NPU缓存"""
         torch_npu.npu.empty_cache()
-        if self.world_size > 1 and dist.is_initialized():
+        expected_world_size = int(os.environ.get("WORLD_SIZE", self.world_size))
+        if expected_world_size > 1 and dist.is_initialized():
             dist.barrier()
 
     def generate_video(self, request, task_id, progress_callback=None):
@@ -435,7 +500,8 @@ class NPUPipeline(BasePipeline):
 
     def sync(self):
         """分布式同步屏障"""
-        if self.world_size > 1 and dist.is_initialized():
+        expected_world_size = int(os.environ.get("WORLD_SIZE", self.world_size))
+        if expected_world_size > 1 and dist.is_initialized():
             try:
                 dist.barrier()
             except Exception as e:

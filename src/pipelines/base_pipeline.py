@@ -117,11 +117,19 @@ class BasePipeline(abc.ABC):
         if not dist.is_initialized():
             return image_path
 
-        # 🔥 真正的分布式广播
-        obj_list = [image_path]
-        dist.broadcast_object_list(obj_list, src=0)
-        logger.info(f"Rank {self.rank}: Image path broadcast completed")
-        return obj_list[0]
+        # 🔥 检查当前rank是否应该参与通信
+        current_rank = int(os.environ.get("RANK", 0))
+        expected_world_size = int(os.environ.get("WORLD_SIZE", self.world_size))
+
+        # 🔥 只有在预期的world_size范围内才参与广播
+        if current_rank < expected_world_size:
+            obj_list = [image_path]
+            dist.broadcast_object_list(obj_list, src=0)
+            logger.info(f"Rank {current_rank}: Image path broadcast completed")
+            return obj_list[0]
+        else:
+            logger.info(f"Rank {current_rank}: Skipping image broadcast (not in active group)")
+            return image_path
 
     def _download_image_sync(self, image_url: str, task_id: str) -> str:
         """同步下载图片"""
@@ -142,21 +150,29 @@ class BasePipeline(abc.ABC):
 
     def _generate_video_common(self, request, image_path: str, output_path: str, progress_callback: Optional[Callable] = None) -> str:
         """模板方法：调用设备特定生成逻辑并保存视频"""
+        # 🔥 检查当前rank是否应该参与计算
+        current_rank = int(os.environ.get("RANK", 0))
+        expected_world_size = int(os.environ.get("WORLD_SIZE", self.world_size))
+        
+        if current_rank >= expected_world_size:
+            logger.info(f"Rank {current_rank}: Skipping computation (not in active group)")
+            return f"/videos/{os.path.basename(output_path)}"
+        
         self._log_memory_usage()
         
-        # 🔥 所有rank都加载图片
+        # 🔥 所有参与的rank都加载图片
         img = Image.open(image_path).convert("RGB")
         
-        # 🔥 关键：所有rank都参与计算
+        # 🔥 只有参与的rank进行计算
         video_tensor = self._generate_video_device_specific(request, img, progress_callback)
         
         # 🔥 只有rank 0保存视频
-        if self.rank == 0 and video_tensor is not None:
+        if current_rank == 0 and video_tensor is not None:
             self._save_video(video_tensor, output_path)
             logger.info(f"Video saved to {output_path}")
         
-        # 🔥 分布式同步
-        if self.world_size > 1:
+        # 🔥 只有参与的rank进行同步
+        if expected_world_size > 1:
             import torch.distributed as dist
             if dist.is_initialized():
                 dist.barrier()

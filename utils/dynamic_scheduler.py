@@ -2,6 +2,7 @@ import torch
 import torch.distributed as dist
 import logging
 import time
+import threading
 from typing import List, Dict, Optional, Set
 from dataclasses import dataclass
 from .load_monitor import LoadMonitor
@@ -29,7 +30,13 @@ class DynamicGPUScheduler:
         self.available_ranks: Set[int] = set(range(world_size))
         self.active_tasks: Dict[str, TaskResourcePlan] = {}
         self.task_queue: List[TaskResourcePlan] = []
+        self.task_lock = threading.Lock()
+        self.gpu_status = {i: "available" for i in range(world_size)}
+        self.pending_tasks = {}
+        self.running = False
         
+        logger.info(f"🎯 Dynamic GPU Scheduler initialized: {world_size} {device_type.upper()} devices")
+
     def start(self):
         """启动调度器"""
         self.load_monitor.start()
@@ -149,62 +156,120 @@ class DynamicGPUScheduler:
             return selected_ranks
         
         return None
-    
+
+    def find_available_gpus(self, required_count: int) -> Optional[List[int]]:
+        """查找可用的GPU"""
+        available_list = [rank for rank, status in self.gpu_status.items() if status == "available"]
+
+        if len(available_list) >= required_count:
+            return available_list[:required_count]
+        else:
+            return None
+
+
     def release_gpus(self, task_id: str):
         """释放GPU资源"""
         if task_id in self.active_tasks:
             plan = self.active_tasks.pop(task_id)
-            
-            # 释放GPU
+
+            # 🔥 更新两种状态记录
             for rank in plan.assigned_ranks:
+                self.gpu_status[rank] = "available"
                 self.available_ranks.add(rank)
-            
+
             logger.info(f"Task {task_id}: Released GPUs {plan.assigned_ranks}")
-            
+
             # 🔥 尝试启动队列中的任务
             self._try_start_queued_tasks()
-    
+
+            # 🔥 清理等待队列中的已完成任务
+            if task_id in self.pending_tasks:
+                del self.pending_tasks[task_id]
+
     def _try_start_queued_tasks(self):
         """尝试启动队列中的任务"""
-        for plan in self.task_queue[:]:
-            if self.try_allocate_gpus(plan):
-                self.task_queue.remove(plan)
-                logger.info(f"Started queued task {plan.task_id}")
-    
+        scheduled_tasks = []
+
+        for plan in self.task_queue[:]:  # 复制列表避免修改时出错
+            available_ranks = self.find_available_gpus(plan.required_gpus)
+
+            if available_ranks is not None:
+                # 分配GPU
+                plan.assigned_ranks = available_ranks
+                self.active_tasks[plan.task_id] = plan
+
+                # 更新状态
+                for rank in available_ranks:
+                    self.gpu_status[rank] = "busy"
+                    self.available_ranks.discard(rank)
+
+                scheduled_tasks.append(plan)
+                logger.info(f"Started queued task {plan.task_id} with GPUs {available_ranks}")
+
+        # 移除已调度的任务
+        for plan in scheduled_tasks:
+            self.task_queue.remove(plan)
+            if plan.task_id in self.pending_tasks:
+                del self.pending_tasks[plan.task_id]
+
     def schedule_task(self, task_id: str, request) -> Optional[List[int]]:
-        """调度任务"""
-        
-        # 创建资源计划
-        plan = self.estimate_task_requirements(request)
-        plan.task_id = task_id
-        
-        logger.info(f"Task {task_id}: {plan.complexity_level} task, requires {plan.required_gpus} GPUs")
-        
-        # 尝试立即分配
-        assigned_ranks = self.try_allocate_gpus(plan)
-        
-        if assigned_ranks:
-            return assigned_ranks
-        else:
-            # 加入队列
-            self.task_queue.append(plan)
-            logger.info(f"Task {task_id}: Queued, waiting for {plan.required_gpus} GPUs")
-            return None
-    
+        """调度任务到最佳GPU组合"""
+        with self.task_lock:
+            # 估算资源需求
+            plan = self.estimate_task_requirements(request)
+            plan.task_id = task_id
+
+            logger.info(f"🎯 Task {task_id}: Requires {plan.required_gpus} GPUs ({plan.complexity_level})")
+
+            # 查找可用GPU
+            available_ranks = self.find_available_gpus(plan.required_gpus)
+
+            if available_ranks is None:
+                # 没有足够的GPU，加入等待队列
+                self.pending_tasks[task_id] = plan
+                self.task_queue.append(plan)  # 🔥 同时添加到两个队列保持兼容
+                logger.warning(f"⏳ Task {task_id}: Insufficient GPUs, queued for later (needs {plan.required_gpus})")
+                return None
+
+            # 分配GPU
+            plan.assigned_ranks = available_ranks
+            self.active_tasks[task_id] = plan
+
+            # 🔥 更新两种状态记录
+            for rank in available_ranks:
+                self.gpu_status[rank] = "busy"
+                self.available_ranks.discard(rank)  # 从可用集合中移除
+
+            logger.info(f"✅ Task {task_id}: Allocated {len(available_ranks)} GPUs: {available_ranks}")
+            return available_ranks
+
     def get_scheduler_status(self) -> Dict:
         """获取调度器状态"""
-        return {
-            "total_gpus": self.world_size,
-            "available_gpus": len(self.available_ranks),
-            "active_tasks": len(self.active_tasks),
-            "queued_tasks": len(self.task_queue),
-            "available_ranks": list(self.available_ranks),
-            "active_task_details": {
-                task_id: {
-                    "assigned_ranks": plan.assigned_ranks,
-                    "complexity": plan.complexity_level,
-                    "required_gpus": plan.required_gpus
+        with self.task_lock:
+            available_gpus = [rank for rank, status in self.gpu_status.items() if status == "available"]
+            busy_gpus = [rank for rank, status in self.gpu_status.items() if status == "busy"]
+            
+            return {
+                "dynamic_scheduling": True,
+                "world_size": self.world_size,
+                "device_type": self.device_type,
+                "total_gpus": self.world_size,
+                "available_gpus": len(available_gpus),
+                "busy_gpus": len(busy_gpus),
+                "active_tasks": len(self.active_tasks),
+                "queued_tasks": len(self.task_queue),
+                "pending_tasks": len(self.pending_tasks),
+                "available_ranks": available_gpus,
+                "busy_ranks": busy_gpus,
+                "running": getattr(self, 'running', False),
+                "gpu_status": dict(self.gpu_status),
+                "active_task_details": {
+                    task_id: {
+                        "assigned_ranks": plan.assigned_ranks,
+                        "complexity": plan.complexity_level,
+                        "required_gpus": plan.required_gpus,
+                        "estimated_time": plan.estimated_time
+                    }
+                    for task_id, plan in self.active_tasks.items()
                 }
-                for task_id, plan in self.active_tasks.items()
             }
-        }
